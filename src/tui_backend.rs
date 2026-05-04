@@ -1,6 +1,11 @@
 use crate::{
     keymap::KeyMapper,
-    model::{EffectKind, Feature, Rgb, Runtime, Theme, ALT_SCREEN_ENTER_SEQUENCES},
+    model::{
+        EffectKind, Feature, Rgb, Runtime, Theme, ALT_SCREEN_ENTER_SEQUENCES,
+        LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES, LIVE_RENDER_INPUT_MODE_ENABLE_SEQUENCES,
+        LIVE_RENDER_MOUSE_DISABLE_SEQUENCES, LIVE_RENDER_MOUSE_ENABLE_SEQUENCES,
+        LIVE_RENDER_RESET_SEQUENCES,
+    },
     support::{exit_with_status, sleep_frame, spawn_direct},
     theme::{indexed_color, SgrRewriter},
 };
@@ -72,10 +77,17 @@ fn run_live_render(rt: Runtime) -> Result<()> {
     let _guard = TerminalGuard::enter(true)?;
 
     let writer = Arc::new(Mutex::new(session.writer));
-    let _input_handle = spawn_input_forwarder(writer.clone(), rt.keymap.clone());
+    let mouse_activity = Arc::new(Mutex::new(None));
+    let _input_handle = spawn_input_forwarder(
+        writer.clone(),
+        rt.keymap.clone(),
+        Some(mouse_activity.clone()),
+    );
 
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let mut prev: Option<Vec<Vec<StyledCell>>> = None;
+    let mut frame = 0usize;
+    let mut mouse_reporting_active = false;
     let mut buf = [0u8; 8192];
     let mut stdout = io::stdout();
     execute!(
@@ -88,6 +100,11 @@ fn run_live_render(rt: Runtime) -> Result<()> {
         match session.reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                mouse_reporting_active = forward_live_passthrough_sequences(
+                    &mut stdout,
+                    &buf[..n],
+                    mouse_reporting_active,
+                )?;
                 parser.process(&buf[..n]);
                 let current = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
                 let state = collect_terminal_state(parser.screen(), rows, cols);
@@ -96,15 +113,27 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                 let mut changed =
                     diff_screen(prev.as_ref(), &current, rows as usize, cols as usize);
                 apply_scroll_hint(&mut changed, scroll_hint, rows as usize, cols as usize);
-                draw_live_screen(
+                animate_live_render_update(
                     &mut stdout,
                     &current,
                     &state,
                     &changed,
-                    scroll_hint,
                     &rt.theme,
+                    LiveRenderFrame {
+                        scroll_hint,
+                        effect: if mouse_reporting_active && mouse_activity_recent(&mouse_activity)
+                        {
+                            EffectKind::Plain
+                        } else {
+                            rt.effect
+                        },
+                        frame,
+                        ratio: 1.0,
+                    },
+                    rt.duration_ms,
                 )?;
                 prev = Some(current);
+                frame = frame.wrapping_add(1);
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => break,
@@ -112,7 +141,66 @@ fn run_live_render(rt: Runtime) -> Result<()> {
     }
 
     let status = session.child.wait()?;
+    reset_live_passthrough_sequences(&mut stdout)?;
     exit_with_status(status.exit_code() as i32);
+}
+
+fn animate_live_render_update(
+    out: &mut io::Stdout,
+    cells: &[Vec<StyledCell>],
+    state: &TerminalState,
+    changed: &[Vec<bool>],
+    theme: &Theme,
+    base_frame: LiveRenderFrame,
+    duration_ms: u64,
+) -> io::Result<()> {
+    let ratios = live_render_effect_ratios(base_frame.effect);
+    let total_ms = duration_ms.clamp(45, 120);
+    let per_frame_ms = (total_ms / ratios.len().max(1) as u64).max(1);
+    let final_changed = full_screen_changed(cells);
+
+    for (idx, ratio) in ratios.iter().copied().enumerate() {
+        let frame_changed = if idx + 1 == ratios.len() {
+            &final_changed
+        } else {
+            changed
+        };
+        draw_live_screen(
+            out,
+            cells,
+            state,
+            frame_changed,
+            theme,
+            LiveRenderFrame {
+                scroll_hint: if idx == 0 {
+                    base_frame.scroll_hint
+                } else {
+                    None
+                },
+                effect: base_frame.effect,
+                frame: base_frame.frame + idx,
+                ratio,
+            },
+        )?;
+        if idx + 1 < ratios.len() {
+            thread::sleep(Duration::from_millis(per_frame_ms));
+        }
+    }
+
+    Ok(())
+}
+
+fn live_render_effect_ratios(effect: EffectKind) -> &'static [f32] {
+    match effect {
+        EffectKind::Plain => &[1.0],
+        EffectKind::Fade => &[0.35, 1.0],
+        EffectKind::Sweep => &[0.25, 0.65, 1.0],
+        EffectKind::Coalesce => &[0.12, 0.38, 0.72, 1.0],
+    }
+}
+
+fn full_screen_changed(cells: &[Vec<StyledCell>]) -> Vec<Vec<bool>> {
+    cells.iter().map(|row| vec![true; row.len()]).collect()
 }
 
 fn run_reveal(rt: Runtime) -> Result<()> {
@@ -227,7 +315,7 @@ fn continue_passthrough(
     let use_raw = io::stdin().is_terminal() && io::stdout().is_terminal();
     let _guard = TerminalGuard::enter(use_raw)?;
     let writer = Arc::new(Mutex::new(session.writer));
-    let _input_handle = spawn_input_forwarder(writer.clone(), keymap);
+    let _input_handle = spawn_input_forwarder(writer.clone(), keymap, None);
 
     let mut out = io::stdout();
     let mut rewriter = theme.map(SgrRewriter::new);
@@ -273,6 +361,61 @@ fn contains_alt_screen_enter_sequence(bytes: &[u8]) -> bool {
     })
 }
 
+fn forward_live_passthrough_sequences(
+    out: &mut io::Stdout,
+    bytes: &[u8],
+    mut mouse_reporting_active: bool,
+) -> io::Result<bool> {
+    let mut wrote_any = false;
+    for pattern in LIVE_RENDER_MOUSE_ENABLE_SEQUENCES {
+        for _ in bytes
+            .windows(pattern.len())
+            .filter(|window| *window == *pattern)
+        {
+            out.write_all(pattern)?;
+            wrote_any = true;
+            mouse_reporting_active = true;
+        }
+    }
+    for pattern in LIVE_RENDER_MOUSE_DISABLE_SEQUENCES {
+        for _ in bytes
+            .windows(pattern.len())
+            .filter(|window| *window == *pattern)
+        {
+            out.write_all(pattern)?;
+            wrote_any = true;
+            mouse_reporting_active = false;
+        }
+    }
+    for pattern in LIVE_RENDER_INPUT_MODE_ENABLE_SEQUENCES {
+        for _ in bytes
+            .windows(pattern.len())
+            .filter(|window| *window == *pattern)
+        {
+            out.write_all(pattern)?;
+            wrote_any = true;
+        }
+    }
+    for pattern in LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES {
+        for _ in bytes
+            .windows(pattern.len())
+            .filter(|window| *window == *pattern)
+        {
+            out.write_all(pattern)?;
+            wrote_any = true;
+        }
+    }
+    if wrote_any {
+        out.flush()?;
+    }
+    Ok(mouse_reporting_active)
+}
+
+fn reset_live_passthrough_sequences(out: &mut io::Stdout) -> io::Result<()> {
+    out.write_all(LIVE_RENDER_RESET_SEQUENCES)?;
+    out.flush()
+}
+
 fn strip_alt_screen_enter_sequences(bytes: &[u8]) -> Vec<u8> {
     let mut out = bytes.to_vec();
     for pattern in ALT_SCREEN_ENTER_SEQUENCES {
@@ -305,10 +448,12 @@ struct TerminalGuard {
 }
 
 const KEYMAP_PENDING_TIMEOUT: Duration = Duration::from_millis(35);
+const MOUSE_ACTIVITY_WINDOW: Duration = Duration::from_millis(180);
 
 fn spawn_input_forwarder(
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     keymap: HashMap<Vec<u8>, Vec<u8>>,
+    mouse_activity: Option<Arc<Mutex<Option<Instant>>>>,
 ) -> thread::JoinHandle<io::Result<()>> {
     thread::spawn(move || -> io::Result<()> {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -332,6 +477,11 @@ fn spawn_input_forwarder(
         loop {
             match rx.recv_timeout(KEYMAP_PENDING_TIMEOUT) {
                 Ok(chunk) => {
+                    if let Some(activity) = mouse_activity.as_ref() {
+                        if contains_noise_suppression_input(&chunk) {
+                            *activity.lock().unwrap() = Some(Instant::now());
+                        }
+                    }
                     let mapped = mapper.push_bytes(&chunk);
                     if !mapped.is_empty() {
                         let mut w = writer.lock().unwrap();
@@ -360,6 +510,44 @@ fn spawn_input_forwarder(
         }
         Ok(())
     })
+}
+
+fn contains_noise_suppression_input(bytes: &[u8]) -> bool {
+    contains_up_down_input(bytes) || contains_mouse_scroll_or_drag(bytes)
+}
+
+fn contains_up_down_input(bytes: &[u8]) -> bool {
+    bytes.windows(3).any(|window| {
+        window == b"\x1b[A" || window == b"\x1b[B" || window == b"\x1bOA" || window == b"\x1bOB"
+    })
+}
+
+fn contains_mouse_scroll_or_drag(bytes: &[u8]) -> bool {
+    // SGR mouse mode: wheel events use button codes 64/65, drag starts at 32.
+    let text = String::from_utf8_lossy(bytes);
+    if text.contains("\x1b[<64;")
+        || text.contains("\x1b[<65;")
+        || text.contains("\x1b[<32;")
+        || text.contains("\x1b[<33;")
+        || text.contains("\x1b[<34;")
+        || text.contains("\x1b[<35;")
+    {
+        return true;
+    }
+
+    // X10/normal mouse mode: ESC [ M Cb Cx Cy
+    // Wheel up/down are encoded as 96/97, drag starts at 64.
+    bytes.windows(6).any(|window| {
+        window.starts_with(b"\x1b[M") && matches!(window[3], 96 | 97 | 64 | 65 | 66 | 67)
+    })
+}
+
+fn mouse_activity_recent(mouse_activity: &Arc<Mutex<Option<Instant>>>) -> bool {
+    mouse_activity
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|instant| instant.elapsed() <= MOUSE_ACTIVITY_WINDOW)
 }
 
 struct ResizeWatcher {
@@ -468,6 +656,14 @@ struct TerminalState {
 enum ScrollHint {
     Up(u16),
     Down(u16),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LiveRenderFrame {
+    scroll_hint: Option<ScrollHint>,
+    effect: EffectKind,
+    frame: usize,
+    ratio: f32,
 }
 
 fn collect_terminal_state(screen: &vt100::Screen, rows: u16, cols: u16) -> TerminalState {
@@ -673,42 +869,47 @@ fn draw_live_screen(
     cells: &[Vec<StyledCell>],
     state: &TerminalState,
     changed: &[Vec<bool>],
-    scroll_hint: Option<ScrollHint>,
-    theme: &Theme,
+    _theme: &Theme,
+    animation: LiveRenderFrame,
 ) -> io::Result<()> {
-    match scroll_hint {
+    match animation.scroll_hint {
         Some(ScrollHint::Up(lines)) => execute!(out, ScrollUp(lines))?,
         Some(ScrollHint::Down(lines)) => execute!(out, ScrollDown(lines))?,
         None => {}
     }
     let rows = cells.len();
-    let flash_fg = theme.default_bg_rgb();
-    let flash_bg = theme.default_fg_rgb();
     for r in 0..rows {
-        let spans = row_dirty_spans(changed, r);
-        if spans.is_empty() {
+        if !row_has_changes(changed, r) {
             continue;
         }
-        for (start, end) in spans {
-            execute!(out, crossterm::cursor::MoveTo(start as u16, r as u16))?;
-            let mut style_state = None;
-            for c in start..=end.min(cells[r].len().saturating_sub(1)) {
-                let cell = &cells[r][c];
-                if cell.wide_continuation {
-                    continue;
-                }
-                if changed[r][c] && !cell.text.trim().is_empty() {
-                    let mut flash = cell.clone();
-                    flash.fg = flash_fg;
-                    flash.bg = flash_bg;
-                    flash.bold = true;
-                    write_cell(out, &flash, &cell.text, &mut style_state)?;
-                } else {
-                    write_cell(out, cell, &cell.text, &mut style_state)?;
-                }
+
+        // Redraw the whole dirty row so the terminal keeps the row background
+        // in sync. Span-only redraw leaves untouched spaces transparent and the
+        // underlying shell can bleed through.
+        execute!(out, crossterm::cursor::MoveTo(0, r as u16))?;
+        let mut style_state = None;
+        for c in 0..cells[r].len() {
+            let cell = &cells[r][c];
+            if cell.wide_continuation {
+                continue;
             }
-            write!(out, "\x1b[0m")?;
+            if changed[r][c] && !cell.text.trim().is_empty() {
+                let mut highlighted = cell.clone();
+                highlighted.bold = true;
+                let text = live_render_text_for_cell(
+                    cell,
+                    r,
+                    c,
+                    animation.frame,
+                    animation.ratio,
+                    animation.effect,
+                );
+                write_cell(out, &highlighted, &text, &mut style_state)?;
+            } else {
+                write_cell(out, cell, &cell.text, &mut style_state)?;
+            }
         }
+        write!(out, "\x1b[0m")?;
     }
     execute!(
         out,
@@ -722,26 +923,51 @@ fn draw_live_screen(
     out.flush()
 }
 
-fn row_dirty_spans(changed: &[Vec<bool>], row: usize) -> Vec<(usize, usize)> {
-    let Some(cells) = changed.get(row) else {
-        return Vec::new();
-    };
-    let mut spans = Vec::new();
-    let mut start = None;
-    for (idx, is_changed) in cells.iter().copied().enumerate() {
-        match (start, is_changed) {
-            (None, true) => start = Some(idx),
-            (Some(s), false) => {
-                spans.push((s, idx.saturating_sub(1)));
-                start = None;
+fn live_render_text_for_cell(
+    cell: &StyledCell,
+    row: usize,
+    col: usize,
+    frame: usize,
+    ratio: f32,
+    effect: EffectKind,
+) -> String {
+    if cell.text.trim().is_empty() {
+        return cell.text.clone();
+    }
+
+    match effect {
+        EffectKind::Plain => cell.text.clone(),
+        EffectKind::Sweep => {
+            let width_gate = (col as f32 + 1.0) / ((col + 8) as f32);
+            if ratio >= width_gate.clamp(0.0, 1.0) {
+                cell.text.clone()
+            } else {
+                reveal_noise_symbol(row, col, frame).to_string()
             }
-            _ => {}
+        }
+        EffectKind::Fade => {
+            if ratio >= 0.6 {
+                cell.text.clone()
+            } else {
+                reveal_noise_symbol(row, col, frame).to_string()
+            }
+        }
+        EffectKind::Coalesce => {
+            let appear_at = ((row * 17 + col * 7) % 100) as f32 / 100.0;
+            let reveal = ((ratio - appear_at * 0.55) / 0.45).clamp(0.0, 1.0);
+            if reveal >= 0.98 {
+                cell.text.clone()
+            } else {
+                reveal_noise_symbol(row, col, frame).to_string()
+            }
         }
     }
-    if let Some(s) = start {
-        spans.push((s, cells.len().saturating_sub(1)));
-    }
-    spans
+}
+
+fn row_has_changes(changed: &[Vec<bool>], row: usize) -> bool {
+    changed
+        .get(row)
+        .is_some_and(|cells| cells.iter().copied().any(|is_changed| is_changed))
 }
 
 fn detect_scroll_hint(
@@ -919,6 +1145,84 @@ mod tests {
     }
 
     #[test]
+    fn live_render_passthrough_detects_mouse_enable_sequences() {
+        let bytes = b"\x1b[?1002hhello\x1b[?1006h";
+
+        let mut found = Vec::new();
+        for pattern in LIVE_RENDER_MOUSE_ENABLE_SEQUENCES {
+            for _ in bytes
+                .windows(pattern.len())
+                .filter(|window| *window == *pattern)
+            {
+                found.push(*pattern);
+            }
+        }
+
+        assert!(found.contains(&b"\x1b[?1002h".as_slice()));
+        assert!(found.contains(&b"\x1b[?1006h".as_slice()));
+    }
+
+    #[test]
+    fn live_render_passthrough_detects_mouse_disable_sequences() {
+        let bytes = b"\x1b[?1002lhello\x1b[?1006l";
+
+        let mut found = Vec::new();
+        for pattern in LIVE_RENDER_MOUSE_DISABLE_SEQUENCES {
+            for _ in bytes
+                .windows(pattern.len())
+                .filter(|window| *window == *pattern)
+            {
+                found.push(*pattern);
+            }
+        }
+
+        assert!(found.contains(&b"\x1b[?1002l".as_slice()));
+        assert!(found.contains(&b"\x1b[?1006l".as_slice()));
+    }
+
+    #[test]
+    fn live_render_passthrough_detects_input_mode_sequences() {
+        let bytes = b"\x1b[?1hhello\x1b=\x1b[?1l\x1b>";
+
+        let mut found_enable = Vec::new();
+        for pattern in LIVE_RENDER_INPUT_MODE_ENABLE_SEQUENCES {
+            for _ in bytes
+                .windows(pattern.len())
+                .filter(|window| *window == *pattern)
+            {
+                found_enable.push(*pattern);
+            }
+        }
+
+        let mut found_disable = Vec::new();
+        for pattern in LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES {
+            for _ in bytes
+                .windows(pattern.len())
+                .filter(|window| *window == *pattern)
+            {
+                found_disable.push(*pattern);
+            }
+        }
+
+        assert!(found_enable.contains(&b"\x1b[?1h".as_slice()));
+        assert!(found_enable.contains(&b"\x1b=".as_slice()));
+        assert!(found_disable.contains(&b"\x1b[?1l".as_slice()));
+        assert!(found_disable.contains(&b"\x1b>".as_slice()));
+    }
+
+    #[test]
+    fn noise_suppression_input_matches_up_down_and_wheel_or_drag() {
+        assert!(contains_noise_suppression_input(b"\x1b[A"));
+        assert!(contains_noise_suppression_input(b"\x1b[B"));
+        assert!(contains_noise_suppression_input(b"\x1b[<64;10;5M"));
+        assert!(contains_noise_suppression_input(b"\x1b[<32;10;5M"));
+        assert!(contains_noise_suppression_input(b"\x1b[M`!!"));
+        assert!(contains_noise_suppression_input(b"\x1b[M@!!"));
+        assert!(!contains_noise_suppression_input(b"\x1b[C"));
+        assert!(!contains_noise_suppression_input(b"\x1b[<0;10;5M"));
+    }
+
+    #[test]
     fn strip_byte_sequence_removes_all_occurrences() {
         let stripped = strip_byte_sequence(b"xxSTARTmiddlexxSTARTtail", b"START");
 
@@ -926,13 +1230,50 @@ mod tests {
     }
 
     #[test]
-    fn row_dirty_spans_groups_contiguous_changed_cells() {
-        let changed = vec![vec![false, true, true, false, true, false, true, true]];
+    fn row_has_changes_detects_dirty_rows() {
+        let changed = vec![vec![false, true, false], vec![false, false, false]];
 
-        let spans = row_dirty_spans(&changed, 0);
+        assert!(row_has_changes(&changed, 0));
+        assert!(!row_has_changes(&changed, 1));
+        assert!(!row_has_changes(&changed, 2));
+    }
 
-        assert_eq!(spans, vec![(1, 2), (4, 4), (6, 7)]);
-        assert!(row_dirty_spans(&changed, 1).is_empty());
+    #[test]
+    fn live_render_effect_ratios_match_effect_style() {
+        assert_eq!(live_render_effect_ratios(EffectKind::Plain), &[1.0]);
+        assert_eq!(live_render_effect_ratios(EffectKind::Fade), &[0.35, 1.0]);
+        assert_eq!(
+            live_render_effect_ratios(EffectKind::Sweep),
+            &[0.25, 0.65, 1.0]
+        );
+        assert_eq!(
+            live_render_effect_ratios(EffectKind::Coalesce),
+            &[0.12, 0.38, 0.72, 1.0]
+        );
+    }
+
+    #[test]
+    fn live_render_coalesce_uses_noise_before_settling() {
+        let cell = cell_with("X", &StyledCell::blank(None));
+
+        let early = live_render_text_for_cell(&cell, 0, 0, 0, 0.12, EffectKind::Coalesce);
+        let late = live_render_text_for_cell(&cell, 0, 0, 3, 1.0, EffectKind::Coalesce);
+
+        assert_ne!(early, " ");
+        assert_eq!(late, "X");
+    }
+
+    #[test]
+    fn full_screen_changed_marks_every_cell_dirty() {
+        let blank = StyledCell::blank(None);
+        let cells = vec![
+            vec![cell_with("a", &blank), cell_with("b", &blank)],
+            vec![cell_with("c", &blank)],
+        ];
+
+        let changed = full_screen_changed(&cells);
+
+        assert_eq!(changed, vec![vec![true, true], vec![true]]);
     }
 
     #[test]
