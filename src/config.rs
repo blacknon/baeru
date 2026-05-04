@@ -16,6 +16,18 @@ use std::{
 pub(crate) fn build_runtime(cli: Cli) -> Result<Runtime> {
     let stdin_is_tty = io::stdin().is_terminal();
     let stdout_is_tty = io::stdout().is_terminal();
+    let term_is_dumb = is_term_dumb();
+    let no_color = env_flag("NO_COLOR");
+    build_runtime_with_env(cli, stdin_is_tty, stdout_is_tty, term_is_dumb, no_color)
+}
+
+fn build_runtime_with_env(
+    cli: Cli,
+    stdin_is_tty: bool,
+    stdout_is_tty: bool,
+    term_is_dumb: bool,
+    no_color: bool,
+) -> Result<Runtime> {
     let command = if cli.command.is_empty() && stdin_is_tty {
         vec![OsString::from("htop")]
     } else {
@@ -30,17 +42,23 @@ pub(crate) fn build_runtime(cli: Cli) -> Result<Runtime> {
     let profile = find_profile(&config, &command).cloned().unwrap_or_default();
 
     let requested_backend = cli.backend.or(profile.backend).unwrap_or(Backend::Auto);
-    let backend = resolve_backend(requested_backend, &command, stdin_is_tty, stdout_is_tty);
+    let backend = resolve_backend(
+        requested_backend,
+        &command,
+        stdin_is_tty,
+        stdout_is_tty,
+        term_is_dumb,
+    );
 
     let mut features = resolve_features(&profile, cli.mode, backend);
-    if !stdout_is_tty || is_term_dumb() {
+    if !stdout_is_tty || term_is_dumb {
         features.remove(&Feature::Reveal);
         features.remove(&Feature::InlineAnimation);
         features.remove(&Feature::LiveColor);
         features.remove(&Feature::Splash);
         features.remove(&Feature::LiveRender);
     }
-    if env_flag("NO_COLOR") {
+    if no_color {
         features.remove(&Feature::LiveColor);
     }
 
@@ -135,11 +153,12 @@ fn resolve_backend(
     command: &[OsString],
     stdin_is_tty: bool,
     stdout_is_tty: bool,
+    term_is_dumb: bool,
 ) -> Backend {
     match requested {
         Backend::Tui | Backend::Cli | Backend::Raw => requested,
         Backend::Auto => {
-            if !stdout_is_tty || is_term_dumb() {
+            if !stdout_is_tty || term_is_dumb {
                 Backend::Raw
             } else if command.is_empty() && !stdin_is_tty {
                 Backend::Cli
@@ -331,6 +350,128 @@ profiles:
         assert_eq!(profile.cli_gradient_end.as_deref(), Some("#eafff2"));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn build_runtime_with_env_applies_cli_profile_and_colors() {
+        let config_path = unique_temp_file("baeru-runtime-config.yml");
+        let theme_path = unique_temp_file("baeru-runtime-theme.yml");
+        fs::write(
+            &theme_path,
+            r##"
+name: fixture
+default_fg: "#eeeeee"
+default_bg: "#111111"
+force_default: true
+foreground:
+  - { at: 0.0, color: "#001122" }
+  - { at: 1.0, color: "#ddeeff" }
+background:
+  - { at: 0.0, color: "#000000" }
+  - { at: 1.0, color: "#ffffff" }
+"##,
+        )
+        .expect("fixture theme should be written");
+        fs::write(
+            &config_path,
+            format!(
+                r##"
+profiles:
+  - name: ls-inline
+    match:
+      command: ls
+    backend: cli
+    features:
+      - inline_animation
+    effect: sweep
+    theme_file: "{}"
+    cli_settled_color: "#b6ffd0"
+    cli_gradient_start: "#004d26"
+    cli_gradient_end: "#eafff2"
+    duration_ms: 900
+    frames: 20
+"##,
+                theme_path.display()
+            ),
+        )
+        .expect("fixture config should be written");
+
+        let runtime = build_runtime_with_env(
+            Cli {
+                backend: None,
+                mode: None,
+                effect: None,
+                config_file: Some(config_path.clone()),
+                theme_file: None,
+                palette: "jirai-pink".to_string(),
+                keymap_file: None,
+                capture_ms: 360,
+                duration_ms: 720,
+                frames: 24,
+                max_lines: 200,
+                max_bytes: 1_000_000,
+                animate_over_limit: false,
+                no_theme_after_reveal: false,
+                command: vec![OsString::from("ls")],
+            },
+            true,
+            true,
+            false,
+            false,
+        )
+        .expect("runtime should build");
+
+        assert_eq!(runtime.backend, Backend::Cli);
+        assert!(runtime.features.contains(&Feature::InlineAnimation));
+        assert_eq!(runtime.effect, EffectKind::Sweep);
+        assert_eq!(runtime.frames, 20);
+        assert_eq!(runtime.duration_ms, 900);
+        assert_eq!(
+            runtime.cli_settled_color,
+            Some(crate::model::Rgb(0xb6, 0xff, 0xd0))
+        );
+        assert_eq!(
+            runtime.cli_gradient_start,
+            Some(crate::model::Rgb(0x00, 0x4d, 0x26))
+        );
+        assert_eq!(
+            runtime.cli_gradient_end,
+            Some(crate::model::Rgb(0xea, 0xff, 0xf2))
+        );
+
+        let _ = fs::remove_file(config_path);
+        let _ = fs::remove_file(theme_path);
+    }
+
+    #[test]
+    fn build_runtime_with_env_disables_live_color_for_no_color() {
+        let runtime = build_runtime_with_env(
+            Cli {
+                backend: Some(Backend::Tui),
+                mode: Some(Mode::Reveal),
+                effect: None,
+                config_file: None,
+                theme_file: None,
+                palette: "jirai-pink".to_string(),
+                keymap_file: None,
+                capture_ms: 360,
+                duration_ms: 720,
+                frames: 24,
+                max_lines: 200,
+                max_bytes: 1_000_000,
+                animate_over_limit: false,
+                no_theme_after_reveal: false,
+                command: vec![OsString::from("htop")],
+            },
+            true,
+            true,
+            false,
+            true,
+        )
+        .expect("runtime should build");
+
+        assert!(runtime.features.contains(&Feature::Reveal));
+        assert!(!runtime.features.contains(&Feature::LiveColor));
     }
 
     fn unique_temp_file(name: &str) -> PathBuf {
