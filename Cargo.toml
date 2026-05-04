@@ -17,8 +17,8 @@ include = [
   "LICENSE",
   "themes/**",
   "examples/minimal.yml",
+  "examples/keymaps/**",
   "examples/themes/**",
-  "keymaps/**",
 ]
 
 [dependencies]

@@ -71,7 +71,7 @@ Explicit examples:
 ```bash
 cargo run -- --mode reveal -- htop
 cargo run -- --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
-cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml --keymap-file keymaps/htop-vim.yml -- htop
+cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml --keymap-file examples/keymaps/htop-vim.yml -- htop
 cargo run -- --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
 cargo run -- --backend cli -- ls -la
 cargo run -- --backend cli -- git status
@@ -244,7 +244,7 @@ profiles:
       - live_color
       - keymap
     effect: coalesce
-    keymap_file: keymaps/htop-vim.yml
+    keymap_file: examples/keymaps/htop-vim.yml
     theme_file: examples/themes/jirai-pink.yml
     capture_ms: 360
     duration_ms: 720
@@ -337,6 +337,12 @@ Current example themes include:
 - `eva-unit-01`
 - `eva-unit-01-htop`
 - `gundam-tricolor-htop`
+
+## Keymaps
+
+Example keymap files live under:
+
+- `examples/keymaps/`
 
 ## Limitations
 

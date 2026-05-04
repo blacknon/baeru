@@ -8,7 +8,7 @@ profiles:
       - live_color
       - keymap
     effect: coalesce
-    keymap_file: keymaps/htop-vim.yml
+    keymap_file: examples/keymaps/htop-vim.yml
     theme_file: examples/themes/jirai-pink.yml
     capture_ms: 360
     duration_ms: 720
@@ -106,4 +106,4 @@ profiles:
     features:
       - live_render
       - keymap
-    keymap_file: keymaps/htop-vim.yml
+    keymap_file: examples/keymaps/htop-vim.yml
