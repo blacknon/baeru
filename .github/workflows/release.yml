@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.git_ref != '' && inputs.git_ref || github.ref }}
 
@@ -75,7 +75,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.git_ref != '' && inputs.git_ref || github.ref }}
 
@@ -108,13 +108,13 @@ jobs:
           PKGDIR="dist/package"
 
           rm -rf dist
-          mkdir -p "$PKGDIR/examples" "$PKGDIR/keymaps" "$PKGDIR/themes"
+          mkdir -p "$PKGDIR/examples/keymaps" "$PKGDIR/themes"
 
           cp "target/${TARGET}/release/baeru" "$PKGDIR/"
           cp README.md LICENSE "$PKGDIR/"
           cp examples/minimal.yml "$PKGDIR/examples/baeru.yml"
+          cp -R examples/keymaps/. "$PKGDIR/examples/keymaps/"
           cp -R examples/themes/. "$PKGDIR/examples/themes/"
-          cp -R keymaps/. "$PKGDIR/keymaps/"
           cp -R themes/. "$PKGDIR/themes/"
 
           tar -C "$PKGDIR" -czf "dist/${ARCHIVE}" .
@@ -130,14 +130,14 @@ jobs:
 
           if (Test-Path dist) { Remove-Item dist -Recurse -Force }
           New-Item -ItemType Directory -Force -Path "$PkgDir/examples/themes" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$PkgDir/keymaps" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$PkgDir/examples/keymaps" | Out-Null
           New-Item -ItemType Directory -Force -Path "$PkgDir/themes" | Out-Null
 
           Copy-Item "target/$Target/release/baeru.exe" "$PkgDir/"
           Copy-Item README.md, LICENSE "$PkgDir/"
           Copy-Item examples/minimal.yml "$PkgDir/examples/baeru.yml"
+          Copy-Item examples/keymaps/* "$PkgDir/examples/keymaps/" -Recurse
           Copy-Item examples/themes/* "$PkgDir/examples/themes/" -Recurse
-          Copy-Item keymaps/* "$PkgDir/keymaps/" -Recurse
           Copy-Item themes/* "$PkgDir/themes/" -Recurse
 
           Compress-Archive -Path "$PkgDir/*" -DestinationPath "dist/$Archive" -Force
@@ -156,7 +156,7 @@ jobs:
       version: ${{ steps.package_version.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.git_ref != '' && inputs.git_ref || github.ref }}
 
