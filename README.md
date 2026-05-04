@@ -20,11 +20,11 @@ At the moment, `baeru` focuses on:
 
 ### TUI reveal + live color
 
-![baeru htop demo](assets/htop-demo.gif)
+![baeru htop demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/htop-demo.gif)
 
 ### CLI inline animation
 
-![baeru cli demo](assets/cli-demo.gif)
+![baeru cli demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/cli-demo.gif)
 
 ## Why `baeru`
 
@@ -151,19 +151,19 @@ Sample GIFs:
 
 **coalesce**
 
-![baeru reveal coalesce demo](assets/reveal-coalesce.gif)
+![baeru reveal coalesce demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/reveal-coalesce.gif)
 
 **sweep**
 
-![baeru reveal sweep demo](assets/reveal-sweep.gif)
+![baeru reveal sweep demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/reveal-sweep.gif)
 
 **fade**
 
-![baeru reveal fade demo](assets/reveal-fade.gif)
+![baeru reveal fade demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/reveal-fade.gif)
 
 **plain**
 
-![baeru reveal plain demo](assets/reveal-plain.gif)
+![baeru reveal plain demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/reveal-plain.gif)
 
 ### `live_color`
 
@@ -202,15 +202,15 @@ Sample GIFs:
 
 **coalesce**
 
-![baeru cli coalesce demo](assets/cli-coalesce.gif)
+![baeru cli coalesce demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/cli-coalesce.gif)
 
 **sweep**
 
-![baeru cli sweep demo](assets/cli-sweep.gif)
+![baeru cli sweep demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/cli-sweep.gif)
 
 **fade**
 
-![baeru cli fade demo](assets/cli-fade.gif)
+![baeru cli fade demo](https://raw.githubusercontent.com/blacknon/baeru/main/assets/cli-fade.gif)
 
 ### `live-render` experimental
 

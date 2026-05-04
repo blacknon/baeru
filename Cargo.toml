@@ -5,6 +5,21 @@ edition = "2021"
 description = "Cinematic reveal, ANSI themes, and keymaps for existing terminal apps"
 license = "MIT"
 repository = "https://github.com/blacknon/baeru"
+homepage = "https://github.com/blacknon/baeru"
+readme = "README.md"
+keywords = ["terminal", "tui", "ansi", "cli", "animation"]
+categories = ["command-line-utilities"]
+include = [
+  "src/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "README.md",
+  "LICENSE",
+  "themes/**",
+  "examples/minimal.yml",
+  "examples/themes/**",
+  "keymaps/**",
+]
 
 [dependencies]
 anyhow = "1.0"
