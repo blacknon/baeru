@@ -56,6 +56,35 @@ This separation makes it easy to express profiles like:
 - `vim` stays close to passthrough
 - `ls` uses CLI animation only
 
+## Installation
+
+### Release binaries
+
+Prebuilt binaries are published on the GitHub Releases page.
+
+- Linux: `x86_64-unknown-linux-gnu`
+- macOS: `aarch64-apple-darwin`
+- Windows: `x86_64-pc-windows-msvc`
+
+Download an archive from Releases, then place `baeru` somewhere on your `PATH`.
+
+### crates.io
+
+If you already have a Rust toolchain installed, you can install from crates.io:
+
+```bash
+cargo install baeru
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/blacknon/baeru
+cd baeru
+cargo build --release
+./target/release/baeru -- htop
+```
+
 ## Quick start
 
 Run using the default profile lookup:
