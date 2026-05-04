@@ -366,6 +366,11 @@ fn sgr_rgb(fg: bool, rgb: Rgb) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn test_theme() -> Theme {
         Theme {
@@ -421,5 +426,60 @@ mod tests {
 
         assert!(output.contains("\x1b[38;2;17;34;51mhello"));
         assert!(output.contains("\x1b[48;2;68;85;102m!"));
+    }
+
+    #[test]
+    fn read_theme_loads_example_fixture_with_palette_map() {
+        let theme = read_theme(Path::new("examples/themes/gundam-tricolor-htop.yml"))
+            .expect("theme should load");
+
+        assert_eq!(theme._name.as_deref(), Some("gundam-tricolor-htop"));
+        assert_eq!(
+            theme.palette_map.get(&4).map(String::as_str),
+            Some("#3f7dff")
+        );
+        assert_eq!(
+            theme.background_palette_map.get(&2).map(String::as_str),
+            Some("#10254f")
+        );
+    }
+
+    #[test]
+    fn read_theme_parses_palette_only_theme() {
+        let path = unique_temp_file("baeru-theme-test.yml");
+        fs::write(
+            &path,
+            r##"
+name: fixture
+default_fg: "#eeeeee"
+default_bg: "#111111"
+force_default: true
+palette_map:
+  2: "#123456"
+foreground:
+  - { at: 0.0, color: "#000000" }
+  - { at: 1.0, color: "#ffffff" }
+background:
+  - { at: 0.0, color: "#000000" }
+  - { at: 1.0, color: "#ffffff" }
+"##,
+        )
+        .expect("fixture theme should be written");
+
+        let theme = read_theme(&path).expect("theme should parse");
+        assert_eq!(
+            theme.palette_map.get(&2).map(String::as_str),
+            Some("#123456")
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    fn unique_temp_file(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}-{nanos}"))
     }
 }

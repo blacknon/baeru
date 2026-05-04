@@ -238,6 +238,11 @@ fn find_profile<'a>(config: &'a ConfigFile, command: &[OsString]) -> Option<&'a 
 mod tests {
     use super::*;
     use crate::model::{MatchSpec, Profile};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn find_profile_matches_command_and_args_prefix() {
@@ -295,5 +300,44 @@ mod tests {
         let features = resolve_features(&profile, Some(Mode::ColorLive), Backend::Tui);
 
         assert!(features.contains(&Feature::LiveColor));
+    }
+
+    #[test]
+    fn read_config_parses_cli_color_overrides() {
+        let path = unique_temp_file("baeru-config-test.yml");
+        fs::write(
+            &path,
+            r##"
+profiles:
+  - name: ls-inline
+    match:
+      command: ls
+    backend: cli
+    features:
+      - inline_animation
+    cli_settled_color: "#b6ffd0"
+    cli_gradient_start: "#004d26"
+    cli_gradient_end: "#eafff2"
+"##,
+        )
+        .expect("fixture config should be written");
+
+        let config = read_config(&path).expect("config should parse");
+        assert_eq!(config.profiles.len(), 1);
+        let profile = &config.profiles[0];
+        assert_eq!(profile._name.as_deref(), Some("ls-inline"));
+        assert_eq!(profile.backend, Some(Backend::Cli));
+        assert_eq!(profile.cli_settled_color.as_deref(), Some("#b6ffd0"));
+        assert_eq!(profile.cli_gradient_end.as_deref(), Some("#eafff2"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    fn unique_temp_file(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}-{nanos}"))
     }
 }
