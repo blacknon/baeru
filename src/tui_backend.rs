@@ -649,3 +649,29 @@ fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_alternate_screen_sequences() {
+        assert!(contains_alt_screen_enter_sequence(b"\x1b[?1049hhello"));
+        assert!(contains_alt_screen_enter_sequence(b"\x1b[?47hhello"));
+        assert!(!contains_alt_screen_enter_sequence(b"\x1b[31mhello"));
+    }
+
+    #[test]
+    fn strips_alternate_screen_sequences_from_capture() {
+        let stripped = strip_alt_screen_enter_sequences(b"\x1b[?1049habc\x1b[?47hdef");
+
+        assert_eq!(stripped, b"abcdef".to_vec());
+    }
+
+    #[test]
+    fn strip_byte_sequence_removes_all_occurrences() {
+        let stripped = strip_byte_sequence(b"xxSTARTmiddlexxSTARTtail", b"START");
+
+        assert_eq!(stripped, b"xxmiddlexxtail".to_vec());
+    }
+}

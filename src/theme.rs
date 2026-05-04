@@ -429,6 +429,16 @@ mod tests {
     }
 
     #[test]
+    fn sgr_rewriter_rewrites_256_color_sequences() {
+        let mut rewriter = SgrRewriter::new(test_theme());
+        let bytes = rewriter.feed(b"\x1b[38;5;2mgreen\x1b[48;5;4mblue");
+        let output = String::from_utf8(bytes).expect("valid utf8");
+
+        assert!(output.contains("\x1b[38;2;17;34;51mgreen"));
+        assert!(output.contains("\x1b[48;2;68;85;102mblue"));
+    }
+
+    #[test]
     fn read_theme_loads_example_fixture_with_palette_map() {
         let theme = read_theme(Path::new("examples/themes/gundam-tricolor-htop.yml"))
             .expect("theme should load");

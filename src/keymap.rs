@@ -109,3 +109,45 @@ fn parse_hex_bytes(s: &str) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_keymap_supports_control_and_function_keys() {
+        let map = HashMap::from([
+            ("ctrl-j".to_string(), "down".to_string()),
+            ("f5".to_string(), "r".to_string()),
+        ]);
+
+        let compiled = compile_keymap(&map).expect("keymap should compile");
+
+        assert_eq!(compiled.get(&vec![10]).cloned(), Some(b"\x1b[B".to_vec()));
+        assert_eq!(
+            compiled.get(b"\x1b[15~".as_slice()).cloned(),
+            Some(b"r".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_mapper_prefers_longest_match() {
+        let mapper = KeyMapper::new(HashMap::from([
+            (b"\x1b".to_vec(), b"E".to_vec()),
+            (b"\x1b[A".to_vec(), b"UP".to_vec()),
+        ]));
+
+        let mapped = mapper.map_bytes(b"\x1b[A");
+
+        assert_eq!(mapped, b"UP".to_vec());
+    }
+
+    #[test]
+    fn compile_keymap_rejects_unsupported_key() {
+        let map = HashMap::from([("meta-x".to_string(), "down".to_string())]);
+
+        let result = compile_keymap(&map);
+
+        assert!(result.is_err());
+    }
+}
