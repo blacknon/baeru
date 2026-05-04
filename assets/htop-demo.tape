@@ -23,20 +23,25 @@ Sleep 6s
 # exit htop
 Type "q"
 Sleep 1s
+Enter
+Sleep 1s
 
-
-# Start normal htop
+# Start baeru htop
 Type "# 2nd step: Run htop via baeru"
 Enter
 Sleep 500ms
-Type "baeru -- htop"
+Type "./target/debug/baeru -- htop"
 Enter
 Sleep 6s
 
 # show help
-Type "h"
-Sleep 1s
+Type "?"
+Sleep 2s
 
 # return
-Type Escape
+Escape
+Sleep 4s
+
+# exit
+Ctrl+C
 Sleep 2s

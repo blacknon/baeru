@@ -1,0 +1,24 @@
+[tasks.gif-cli]
+description = "Generate the CLI demo GIF with VHS"
+run = """
+cargo build --locked
+vhs assets/cli-demo.tape
+vhs assets/cli-coalesce.tape
+vhs assets/cli-sweep.tape
+vhs assets/cli-fade.tape
+"""
+
+[tasks.gif-htop]
+description = "Generate the htop demo GIF with VHS"
+run = """
+cargo build --locked
+vhs assets/htop-demo.tape
+vhs assets/reveal-coalesce.tape
+vhs assets/reveal-sweep.tape
+vhs assets/reveal-fade.tape
+vhs assets/reveal-plain.tape
+"""
+
+[tasks.gif]
+description = "Generate all README demo GIFs"
+depends = ["gif-cli", "gif-htop"]

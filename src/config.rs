@@ -200,7 +200,7 @@ fn resolve_features(
 
 fn mode_to_features(mode: Mode) -> Vec<Feature> {
     match mode {
-        Mode::Reveal => vec![Feature::Reveal, Feature::LiveColor],
+        Mode::Reveal => vec![Feature::Reveal],
         Mode::ColorLive => vec![Feature::LiveColor],
         Mode::Splash => vec![Feature::Splash],
         Mode::LiveRender => vec![Feature::LiveRender],
@@ -319,6 +319,15 @@ mod tests {
         let features = resolve_features(&profile, Some(Mode::ColorLive), Backend::Tui);
 
         assert!(features.contains(&Feature::LiveColor));
+    }
+
+    #[test]
+    fn reveal_mode_does_not_imply_live_color_feature() {
+        let profile = Profile::default();
+        let features = resolve_features(&profile, Some(Mode::Reveal), Backend::Tui);
+
+        assert!(features.contains(&Feature::Reveal));
+        assert!(!features.contains(&Feature::LiveColor));
     }
 
     #[test]

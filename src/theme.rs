@@ -9,6 +9,16 @@ pub(crate) fn read_theme(path: &Path) -> Result<Theme> {
 
 pub(crate) fn builtin_theme(name: &str) -> Theme {
     match name {
+        "default" => Theme {
+            _name: Some("default".to_string()),
+            default_fg: Some("#ffffff".to_string()),
+            default_bg: Some("#000000".to_string()),
+            force_default: false,
+            palette_map: HashMap::new(),
+            background_palette_map: HashMap::new(),
+            foreground: vec![],
+            background: vec![],
+        },
         "matrix" | "matrix-green" => Theme {
             _name: Some("matrix-green".to_string()),
             default_fg: Some("#b6ffd0".to_string()),
@@ -28,7 +38,7 @@ pub(crate) fn builtin_theme(name: &str) -> Theme {
                 stop(1.00, "#006633"),
             ],
         },
-        _ => Theme {
+        "jirai-pink" => Theme {
             _name: Some("jirai-pink".to_string()),
             default_fg: Some("#ffcdeb".to_string()),
             default_bg: Some("#120018".to_string()),
@@ -50,6 +60,7 @@ pub(crate) fn builtin_theme(name: &str) -> Theme {
                 stop(1.00, "#ff8fcf"),
             ],
         },
+        _ => builtin_theme("default"),
     }
 }
 
@@ -483,6 +494,15 @@ background:
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn builtin_default_theme_does_not_recolor_indexed_colors() {
+        let theme = builtin_theme("default");
+
+        assert!(!theme.force_default);
+        assert_eq!(theme.map_indexed_color(2, true), indexed_color(2));
+        assert_eq!(theme.map_indexed_color(4, false), indexed_color(4));
     }
 
     fn unique_temp_file(name: &str) -> PathBuf {

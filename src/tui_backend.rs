@@ -2,7 +2,7 @@ use crate::{
     keymap::KeyMapper,
     model::{EffectKind, Feature, Rgb, Runtime, Theme, ALT_SCREEN_ENTER_SEQUENCES},
     support::{exit_with_status, sleep_frame, spawn_direct},
-    theme::SgrRewriter,
+    theme::{indexed_color, SgrRewriter},
 };
 use anyhow::{anyhow, Result};
 use crossterm::{
@@ -103,7 +103,7 @@ fn run_live_render(rt: Runtime) -> Result<()> {
             Ok(0) => break,
             Ok(n) => {
                 parser.process(&buf[..n]);
-                let current = collect_screen(parser.screen(), rows, cols, &rt.theme);
+                let current = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
                 let changed = diff_screen(prev.as_ref(), &current, rows as usize, cols as usize);
                 draw_live_screen(
                     &mut stdout,
@@ -148,14 +148,14 @@ fn run_reveal(rt: Runtime) -> Result<()> {
         execute!(io::stdout(), EnterAlternateScreen)?;
     }
 
-    let screen = collect_screen(parser.screen(), rows, cols, &rt.theme);
-    animate_styled_reveal(&screen, rows, cols, rt.frames, rt.duration_ms, rt.effect)?;
-
     let theme = if rt.no_theme_after_reveal || !rt.features.contains(&Feature::LiveColor) {
         None
     } else {
         Some(rt.theme.clone())
     };
+    let screen = collect_screen(parser.screen(), rows, cols, theme.as_ref());
+    animate_styled_reveal(&screen, rows, cols, rt.frames, rt.duration_ms, rt.effect)?;
+
     let keymap = if rt.features.contains(&Feature::Keymap) {
         rt.keymap.clone()
     } else {
@@ -376,15 +376,15 @@ fn collect_screen(
     screen: &vt100::Screen,
     rows: u16,
     cols: u16,
-    theme: &Theme,
+    theme: Option<&Theme>,
 ) -> Vec<Vec<StyledCell>> {
     let mut result = Vec::new();
     for row in 0..rows {
         let mut out_row = Vec::new();
         for col in 0..cols {
             if let Some(cell) = screen.cell(row, col) {
-                let fg = theme.map_vt_color(cell.fgcolor(), true);
-                let bg = theme.map_vt_color(cell.bgcolor(), false);
+                let fg = display_vt_color(theme, cell.fgcolor(), true);
+                let bg = display_vt_color(theme, cell.bgcolor(), false);
                 out_row.push(StyledCell {
                     text: if cell.has_contents() {
                         cell.contents().to_string()
@@ -410,11 +410,11 @@ fn collect_screen(
 }
 
 impl StyledCell {
-    fn blank(theme: &Theme) -> Self {
+    fn blank(theme: Option<&Theme>) -> Self {
         Self {
             text: " ".to_string(),
-            fg: theme.default_fg_rgb(),
-            bg: theme.default_bg_rgb(),
+            fg: theme.map_or(Rgb(255, 255, 255), Theme::default_fg_rgb),
+            bg: theme.map_or(Rgb(0, 0, 0), Theme::default_bg_rgb),
             bold: false,
             dim: false,
             italic: false,
@@ -422,6 +422,24 @@ impl StyledCell {
             inverse: false,
             wide_continuation: false,
         }
+    }
+}
+
+fn display_vt_color(theme: Option<&Theme>, color: vt100::Color, foreground: bool) -> Rgb {
+    if let Some(theme) = theme {
+        return theme.map_vt_color(color, foreground);
+    }
+
+    match color {
+        vt100::Color::Default => {
+            if foreground {
+                Rgb(255, 255, 255)
+            } else {
+                Rgb(0, 0, 0)
+            }
+        }
+        vt100::Color::Idx(idx) => indexed_color(idx),
+        vt100::Color::Rgb(r, g, b) => Rgb(r, g, b),
     }
 }
 
@@ -507,7 +525,9 @@ fn reveal_text_for_cell(
 }
 
 fn reveal_noise_symbol(row: usize, col: usize, frame: usize) -> &'static str {
-    const SYMBOLS: [&str; 8] = ["░", "▒", "▓", "◆", "◇", "✦", "✧", "♡"];
+    // Use width-stable ASCII symbols here. Ambiguous-width Unicode glyphs
+    // can wobble in some terminals/fonts during full-screen redraw.
+    const SYMBOLS: [&str; 8] = [".", ":", "+", "*", "#", "%", "@", "="];
     SYMBOLS[(row + col + frame) % SYMBOLS.len()]
 }
 
@@ -634,7 +654,7 @@ fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
             }
         }
         EffectKind::Coalesce => {
-            let symbols = ['░', '▒', '▓', '◆', '◇', '✦', '✧'];
+            let symbols = ['.', ':', '+', '*', '#', '%', '@'];
             text.chars()
                 .enumerate()
                 .map(|(idx, ch)| {

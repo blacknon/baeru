@@ -4,19 +4,24 @@ Require cargo
 Require ./target/debug/baeru
 
 Set Shell "bash"
-Set FontSize 26
-Set Width 1280
-Set Height 720
-Set Padding 24
-Set Margin 12
-Set MarginFill "#0b1220"
-Set BorderRadius 18
-Set Theme "Builtin Solarized Dark"
-Set WindowBar Colorful
-Set TypingSpeed 0ms
+Set FontSize 20
+Set Width 1200
+Set Height 760
 Set Framerate 30
+Set Padding 24
+Set CursorBlink false
+Set TypingSpeed 40ms
 
-Type "./target/debug/baeru --backend cli -- ls -la"
+# Start normal htop
+Type "# 1st step: Run ls only"
 Enter
+Sleep 500ms
+Type "ls -la"
+Enter
+Sleep 2s
 
-Sleep 3s
+Type "# 2nd step: Run htop via baeru"
+Enter
+Type "./target/debug/baeru -- ls -la"
+Enter
+Sleep 4s

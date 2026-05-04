@@ -69,7 +69,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) theme_file: Option<PathBuf>,
 
-    #[arg(long, default_value = "jirai-pink")]
+    #[arg(long, default_value = "default")]
     pub(crate) palette: String,
 
     #[arg(long)]

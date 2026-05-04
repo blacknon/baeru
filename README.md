@@ -1,18 +1,20 @@
-# baeru
-
 [![CI](https://github.com/blacknon/baeru/actions/workflows/ci.yml/badge.svg)](https://github.com/blacknon/baeru/actions/workflows/ci.yml)
 
+# baeru
+
 `baeru` is a Rust wrapper for existing terminal applications and command output.
-It adds presentation and interaction layers on top of tools you already use, without patching the target app itself.
+It adds animation, color transformation, and command-specific input behavior without patching the target application itself.
 
-Today, the PoC can:
+At the moment, `baeru` focuses on:
 
-- reveal the initial screen of a TUI with a cinematic startup animation
-- rewrite ANSI colors live using YAML themes
-- remap keys per command using YAML keymaps
-- animate ordinary CLI output inline below the prompt
-- switch behavior per command with `baeru.yml`
-- experiment with VT100-based live screen rendering and change highlighting
+- TUI startup reveal effects
+- live ANSI color rewriting
+- per-command key remapping
+- inline animation for ordinary CLI output
+- profile-driven behavior from `baeru.yml`
+
+> [!NOTE]
+> `baeru` is still a PoC, but the current codebase is already usable as a base for experiments around `htop`, `lazygit`, and animated CLI wrappers.
 
 ## Demo
 
@@ -24,24 +26,40 @@ Today, the PoC can:
 
 ![baeru cli demo](assets/cli-demo.gif)
 
-## Concept
+## Why `baeru`
 
-`baeru` is built around two ideas:
+Many terminal customization ideas fall into one of two extremes:
+
+- patch or fork the target application
+- build a brand-new terminal UI from scratch
+
+`baeru` explores a middle path: keep the original app, but wrap it with presentation and interaction layers.
+
+That makes it possible to experiment with things like:
+
+- cinematic startup reveals for TUIs
+- theme-driven ANSI recoloring
+- per-command keymaps
+- lightweight animation for normal CLI output
+
+## Core model
+
+`baeru` is organized around two concepts:
 
 - `backend`
-  Choose the execution path: `tui`, `cli`, or `raw`
+  The execution path: `tui`, `cli`, or `raw`
 - `features`
-  Layer behaviors such as `reveal`, `live_color`, `keymap`, and `inline_animation`
+  Layered behaviors such as `reveal`, `live_color`, `keymap`, and `inline_animation`
 
-That separation makes it easier to say things like:
+This separation makes it easy to express profiles like:
 
-- `htop` should use `reveal + live_color + keymap`
-- `vim` should stay close to passthrough
-- `ls` should use CLI animation only
+- `htop` uses `reveal + live_color + keymap`
+- `vim` stays close to passthrough
+- `ls` uses CLI animation only
 
 ## Quick start
 
-Build and run:
+Run using the default profile lookup:
 
 ```bash
 cargo run -- -- htop
@@ -67,7 +85,7 @@ cargo run -- -- htop
 cargo run -- -- ls -la
 ```
 
-You can still point to a config explicitly:
+You can also point to a config explicitly:
 
 ```bash
 cargo run -- --config-file baeru.yml -- htop
@@ -102,18 +120,50 @@ printf 'hello\nworld\n' | baeru --backend cli
 
 ### `raw`
 
-For cases where you want plain passthrough behavior without effects.
+For plain passthrough behavior without added effects.
 
 ## Features
 
+### Current matrix
+
+| Area | Name | Kind | Status | Notes |
+| --- | --- | --- | --- | --- |
+| TUI | `reveal` | startup animation | stable PoC | startup capture + animated reveal |
+| TUI | `live_color` | live color transform | stable PoC | ANSI SGR rewrite, supports palette replacement |
+| TUI | `keymap` | input remap | stable PoC | YAML-driven byte-sequence remapping |
+| TUI | `splash` | startup animation | stable PoC | simple pre-launch splash |
+| TUI | `live-render` | live redraw animation | experimental | VT100 rebuild + changed-cell flash |
+| CLI | `inline_animation` + `coalesce` | inline animation | stable PoC | noisy symbols converge into final text |
+| CLI | `inline_animation` + `sweep` | inline animation | stable PoC | left-to-right reveal |
+| CLI | `inline_animation` + `fade` | inline animation | stable PoC | delayed text appearance |
+| CLI | `inline_animation` + `plain` | passthrough-style | stable PoC | same backend path, no animation |
+
 ### `reveal`
 
-Starts the target command in a PTY, captures the initial screen briefly, renders a startup animation, then switches to normal PTY passthrough.
+Starts the target command in a PTY, captures the initial screen briefly, renders a startup animation, then switches to PTY passthrough.
 
 ```bash
 baeru --mode reveal -- htop
 baeru --mode reveal --capture-ms 420 --duration-ms 900 -- htop
 ```
+
+Sample GIFs:
+
+**coalesce**
+
+![baeru reveal coalesce demo](assets/reveal-coalesce.gif)
+
+**sweep**
+
+![baeru reveal sweep demo](assets/reveal-sweep.gif)
+
+**fade**
+
+![baeru reveal fade demo](assets/reveal-fade.gif)
+
+**plain**
+
+![baeru reveal plain demo](assets/reveal-plain.gif)
 
 ### `live_color`
 
@@ -123,14 +173,14 @@ Passes PTY output through while rewriting ANSI SGR colors.
 baeru --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
 ```
 
-This now supports both:
+Current approaches include:
 
 - gradient-based recoloring
-- simple indexed ANSI palette replacement via `palette_map`
+- indexed ANSI palette replacement via `palette_map`
 
 ### `keymap`
 
-Rewrites key input per command using YAML mapping rules.
+Rewrites key input per command using YAML-defined mapping rules.
 
 ### `inline_animation`
 
@@ -148,6 +198,20 @@ baeru --backend cli --effect coalesce -- ls -la
 baeru --backend cli --effect sweep -- git status
 ```
 
+Sample GIFs:
+
+**coalesce**
+
+![baeru cli coalesce demo](assets/cli-coalesce.gif)
+
+**sweep**
+
+![baeru cli sweep demo](assets/cli-sweep.gif)
+
+**fade**
+
+![baeru cli fade demo](assets/cli-fade.gif)
+
 ### `live-render` experimental
 
 Rebuilds the target TUI screen from VT100 state, redraws it from `baeru`, and flashes changed cells.
@@ -156,13 +220,19 @@ Rebuilds the target TUI screen from VT100 state, redraws it from `baeru`, and fl
 baeru --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
 ```
 
-This is intentionally experimental and much more fragile than `reveal` or `live_color`.
+This mode is intentionally experimental and much more fragile than `reveal` or `live_color`.
 
 ## Configuration
 
-## `baeru.yml`
+### `baeru.yml`
 
-`baeru` resolves behavior from profiles matched against command name, exact path, and optional `args_prefix`.
+`baeru` resolves behavior from profiles matched against:
+
+- executable basename
+- exact executable path
+- optional `args_prefix`
+
+Example:
 
 ```yaml
 profiles:
@@ -191,9 +261,9 @@ profiles:
     theme_file: themes/matrix-green.yml
 ```
 
-## Theme YAML
+### Theme YAML
 
-Theme files support the original gradient-based recoloring style:
+Themes support the original gradient-based recoloring style:
 
 ```yaml
 name: jirai-pink
@@ -212,7 +282,7 @@ background:
   - { at: 1.00, color: "#ff8fcf" }
 ```
 
-They also support simple palette replacement for indexed ANSI colors:
+They also support indexed ANSI palette replacement:
 
 ```yaml
 name: gundam-tricolor-htop
@@ -228,9 +298,9 @@ background_palette_map:
   4: "#0f214a"
 ```
 
-This is especially useful for `htop`-style TUI recoloring where preserving rough semantic color roles matters more than luminance mapping.
+This is especially useful for `htop`-style TUIs where preserving rough semantic color roles matters more than pure luminance mapping.
 
-## Keymap YAML
+### Keymap YAML
 
 ```yaml
 keymap:
@@ -251,14 +321,14 @@ Supported key names include:
 - function keys: `f1` ... `f10`
 - control keys: `ctrl-a` ... `ctrl-z`
 - special keys: `enter`, `esc`, `tab`, `backspace`
-- single printable characters such as `j`, `k`, `/`
+- printable single characters such as `j`, `k`, `/`
 
 ## Themes
 
 There are two theme buckets right now:
 
 - `themes/`
-  Built-in style examples that feel close to baseline usage
+  More baseline examples
 - `examples/themes/`
   More expressive or experimental sample themes
 
@@ -269,7 +339,9 @@ Current example themes include:
 - `eva-unit-01-htop`
 - `gundam-tricolor-htop`
 
-## Testing and CI
+## Development
+
+### Checks
 
 CI runs on:
 
@@ -284,7 +356,7 @@ The workflow checks:
 - `cargo clippy --locked --all-targets -- -D warnings`
 - `cargo test --locked --quiet`
 
-Locally, the same commands are enough:
+Run the same checks locally with:
 
 ```bash
 cargo fmt --check
@@ -293,23 +365,45 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --quiet
 ```
 
-## Recording demo GIFs
+### Recording demo GIFs
 
 README demo GIFs are generated with [VHS](https://github.com/charmbracelet/vhs).
 
 Tape files live here:
 
-- `examples/vhs/htop-demo.tape`
-- `examples/vhs/cli-demo.tape`
+- `assets/htop-demo.tape`
+- `assets/cli-demo.tape`
+- `assets/reveal-coalesce.tape`
+- `assets/reveal-sweep.tape`
+- `assets/reveal-fade.tape`
+- `assets/reveal-plain.tape`
+- `assets/cli-coalesce.tape`
+- `assets/cli-sweep.tape`
+- `assets/cli-fade.tape`
 
-Regenerate the current demo assets with:
+Regenerate them directly:
 
 ```bash
-vhs examples/vhs/htop-demo.tape
-vhs examples/vhs/cli-demo.tape
+vhs assets/htop-demo.tape
+vhs assets/cli-demo.tape
+vhs assets/reveal-coalesce.tape
+vhs assets/reveal-sweep.tape
+vhs assets/reveal-fade.tape
+vhs assets/reveal-plain.tape
+vhs assets/cli-coalesce.tape
+vhs assets/cli-sweep.tape
+vhs assets/cli-fade.tape
 ```
 
-## Known limitations
+If you use `mise`, the same can be done with:
+
+```bash
+mise run gif
+mise run gif-htop
+mise run gif-cli
+```
+
+## Limitations
 
 - This is still a PoC. Terminal restoration and signal handling can be hardened further.
 - `reveal` captures a single approximate startup screen. Very unstable startup screens may need `capture_ms` tuning.
@@ -319,6 +413,16 @@ vhs examples/vhs/cli-demo.tape
 - Mouse mapping is not implemented yet, though the architecture leaves room for a future `mousemap` layer.
 - Command-specific semantic adapters are still future work.
 
-## Notes for CodeX
+## License
 
-Concrete implementation notes and follow-up tasks live in [tmp/CODEX_TASKS.md](tmp/CODEX_TASKS.md) and [tmp/BAERU_BACKEND_FEATURES_DESIGN.md](tmp/BAERU_BACKEND_FEATURES_DESIGN.md).
+MIT. See [LICENSE](LICENSE).
+
+## ASW-G-01?
+
+> **?** "ギャラルホルンの真理は此処だ。皆！…バエルの元へ集え！」"
+>
+> **?** "バエルだ！"
+>
+> **?** "アグニカ・カイエルの魂！"
+>
+> **?** "それは違うバエルだよ"
