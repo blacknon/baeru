@@ -362,3 +362,64 @@ fn sgr_rgb(fg: bool, rgb: Rgb) -> String {
         format!("\x1b[48;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_theme() -> Theme {
+        Theme {
+            _name: Some("test".to_string()),
+            default_fg: Some("#ffffff".to_string()),
+            default_bg: Some("#000000".to_string()),
+            force_default: true,
+            palette_map: HashMap::from([(2u8, "#112233".to_string())]),
+            background_palette_map: HashMap::from([(4u8, "#445566".to_string())]),
+            foreground: vec![
+                ColorStop {
+                    at: 0.0,
+                    color: "#000000".to_string(),
+                },
+                ColorStop {
+                    at: 1.0,
+                    color: "#ffffff".to_string(),
+                },
+            ],
+            background: vec![
+                ColorStop {
+                    at: 0.0,
+                    color: "#000000".to_string(),
+                },
+                ColorStop {
+                    at: 1.0,
+                    color: "#ffffff".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn map_indexed_color_prefers_palette_override() {
+        let theme = test_theme();
+
+        assert_eq!(theme.map_indexed_color(2, true), Rgb(0x11, 0x22, 0x33));
+        assert_eq!(theme.map_indexed_color(4, false), Rgb(0x44, 0x55, 0x66));
+    }
+
+    #[test]
+    fn parse_optional_rgb_rejects_invalid_hex() {
+        let result = parse_optional_rgb(Some("oops"));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sgr_rewriter_rewrites_basic_indexed_colors() {
+        let mut rewriter = SgrRewriter::new(test_theme());
+        let bytes = rewriter.feed(b"\x1b[32mhello\x1b[44m!");
+        let output = String::from_utf8(bytes).expect("valid utf8");
+
+        assert!(output.contains("\x1b[38;2;17;34;51mhello"));
+        assert!(output.contains("\x1b[48;2;68;85;102m!"));
+    }
+}

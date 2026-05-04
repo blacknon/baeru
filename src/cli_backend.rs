@@ -274,3 +274,31 @@ fn read_stdin_text() -> Result<(String, i32)> {
     io::stdin().read_to_string(&mut text)?;
     Ok((text, 0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_lines_preserve_tail_keeps_trailing_newline() {
+        let lines = split_lines_preserve_tail("a\nb\n");
+
+        assert_eq!(lines, vec!["a".to_string(), "b".to_string(), String::new()]);
+    }
+
+    #[test]
+    fn strip_ansi_for_animation_removes_csi_and_osc_sequences() {
+        let input = "\x1b[31mred\x1b[0m plain \x1b]0;title\x07tail";
+        let stripped = strip_ansi_for_animation(input);
+
+        assert_eq!(stripped, "red plain tail");
+    }
+
+    #[test]
+    fn cli_coalesce_frame_preserves_whitespace() {
+        let rendered = cli_coalesce_frame("a b", 0, 0, 10);
+        let chars: Vec<char> = rendered.chars().collect();
+
+        assert_eq!(chars[1], ' ');
+    }
+}

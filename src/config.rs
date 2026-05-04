@@ -233,3 +233,67 @@ fn find_profile<'a>(config: &'a ConfigFile, command: &[OsString]) -> Option<&'a 
         (path_match || command_match) && args_match
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MatchSpec, Profile};
+
+    #[test]
+    fn find_profile_matches_command_and_args_prefix() {
+        let config = ConfigFile {
+            profiles: vec![
+                Profile {
+                    _name: Some("git-status".to_string()),
+                    r#match: MatchSpec {
+                        command: Some("git".to_string()),
+                        path: None,
+                        args_prefix: vec!["status".to_string()],
+                    },
+                    backend: Some(Backend::Cli),
+                    ..Profile::default()
+                },
+                Profile {
+                    _name: Some("git-generic".to_string()),
+                    r#match: MatchSpec {
+                        command: Some("git".to_string()),
+                        path: None,
+                        args_prefix: vec![],
+                    },
+                    backend: Some(Backend::Tui),
+                    ..Profile::default()
+                },
+            ],
+        };
+
+        let command = vec![
+            OsString::from("git"),
+            OsString::from("status"),
+            OsString::from("--short"),
+        ];
+
+        let profile = find_profile(&config, &command).expect("profile should match");
+        assert_eq!(profile._name.as_deref(), Some("git-status"));
+        assert_eq!(profile.backend, Some(Backend::Cli));
+    }
+
+    #[test]
+    fn resolve_features_defaults_by_backend() {
+        let profile = Profile::default();
+
+        let cli_features = resolve_features(&profile, None, Backend::Cli);
+        assert!(cli_features.contains(&Feature::InlineAnimation));
+
+        let tui_features = resolve_features(&profile, None, Backend::Tui);
+        assert!(tui_features.contains(&Feature::Reveal));
+        assert!(tui_features.contains(&Feature::LiveColor));
+    }
+
+    #[test]
+    fn cli_mode_adds_live_color_feature() {
+        let profile = Profile::default();
+        let features = resolve_features(&profile, Some(Mode::ColorLive), Backend::Tui);
+
+        assert!(features.contains(&Feature::LiveColor));
+    }
+}
