@@ -10,7 +10,7 @@ use crossterm::{
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, size, Clear, ClearType, EnterAlternateScreen,
-        LeaveAlternateScreen,
+        LeaveAlternateScreen, ScrollDown, ScrollUp,
     },
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -90,13 +90,18 @@ fn run_live_render(rt: Runtime) -> Result<()> {
             Ok(n) => {
                 parser.process(&buf[..n]);
                 let current = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
-                let changed = diff_screen(prev.as_ref(), &current, rows as usize, cols as usize);
+                let state = collect_terminal_state(parser.screen(), rows, cols);
+                let scroll_hint =
+                    detect_scroll_hint(prev.as_ref(), &current, rows as usize, cols as usize);
+                let mut changed =
+                    diff_screen(prev.as_ref(), &current, rows as usize, cols as usize);
+                apply_scroll_hint(&mut changed, scroll_hint, rows as usize, cols as usize);
                 draw_live_screen(
                     &mut stdout,
                     &current,
+                    &state,
                     &changed,
-                    rows as usize,
-                    cols as usize,
+                    scroll_hint,
                     &rt.theme,
                 )?;
                 prev = Some(current);
@@ -452,6 +457,28 @@ struct RenderStyle {
     underline: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalState {
+    cursor_row: u16,
+    cursor_col: u16,
+    cursor_visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScrollHint {
+    Up(u16),
+    Down(u16),
+}
+
+fn collect_terminal_state(screen: &vt100::Screen, rows: u16, cols: u16) -> TerminalState {
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    TerminalState {
+        cursor_row: cursor_row.min(rows.saturating_sub(1)),
+        cursor_col: cursor_col.min(cols.saturating_sub(1)),
+        cursor_visible: !screen.hide_cursor(),
+    }
+}
+
 fn collect_screen(
     screen: &vt100::Screen,
     rows: u16,
@@ -644,37 +671,151 @@ fn diff_screen(
 fn draw_live_screen(
     out: &mut io::Stdout,
     cells: &[Vec<StyledCell>],
+    state: &TerminalState,
     changed: &[Vec<bool>],
-    rows: usize,
-    cols: usize,
+    scroll_hint: Option<ScrollHint>,
     theme: &Theme,
 ) -> io::Result<()> {
-    execute!(out, crossterm::cursor::MoveTo(0, 0))?;
+    match scroll_hint {
+        Some(ScrollHint::Up(lines)) => execute!(out, ScrollUp(lines))?,
+        Some(ScrollHint::Down(lines)) => execute!(out, ScrollDown(lines))?,
+        None => {}
+    }
+    let rows = cells.len();
     let flash_fg = theme.default_bg_rgb();
     let flash_bg = theme.default_fg_rgb();
     for r in 0..rows {
-        let mut style_state = None;
-        for c in 0..cols {
-            let cell = &cells[r][c];
-            if cell.wide_continuation {
-                continue;
-            }
-            if changed[r][c] && !cell.text.trim().is_empty() {
-                let mut flash = cell.clone();
-                flash.fg = flash_fg;
-                flash.bg = flash_bg;
-                flash.bold = true;
-                write_cell(out, &flash, &cell.text, &mut style_state)?;
-            } else {
-                write_cell(out, cell, &cell.text, &mut style_state)?;
-            }
+        let spans = row_dirty_spans(changed, r);
+        if spans.is_empty() {
+            continue;
         }
-        write!(out, "\x1b[0m")?;
-        if r + 1 < rows {
-            write!(out, "\r\n")?;
+        for (start, end) in spans {
+            execute!(out, crossterm::cursor::MoveTo(start as u16, r as u16))?;
+            let mut style_state = None;
+            for c in start..=end.min(cells[r].len().saturating_sub(1)) {
+                let cell = &cells[r][c];
+                if cell.wide_continuation {
+                    continue;
+                }
+                if changed[r][c] && !cell.text.trim().is_empty() {
+                    let mut flash = cell.clone();
+                    flash.fg = flash_fg;
+                    flash.bg = flash_bg;
+                    flash.bold = true;
+                    write_cell(out, &flash, &cell.text, &mut style_state)?;
+                } else {
+                    write_cell(out, cell, &cell.text, &mut style_state)?;
+                }
+            }
+            write!(out, "\x1b[0m")?;
         }
     }
+    execute!(
+        out,
+        crossterm::cursor::MoveTo(state.cursor_col, state.cursor_row)
+    )?;
+    if state.cursor_visible {
+        execute!(out, Show)?;
+    } else {
+        execute!(out, Hide)?;
+    }
     out.flush()
+}
+
+fn row_dirty_spans(changed: &[Vec<bool>], row: usize) -> Vec<(usize, usize)> {
+    let Some(cells) = changed.get(row) else {
+        return Vec::new();
+    };
+    let mut spans = Vec::new();
+    let mut start = None;
+    for (idx, is_changed) in cells.iter().copied().enumerate() {
+        match (start, is_changed) {
+            (None, true) => start = Some(idx),
+            (Some(s), false) => {
+                spans.push((s, idx.saturating_sub(1)));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, cells.len().saturating_sub(1)));
+    }
+    spans
+}
+
+fn detect_scroll_hint(
+    prev: Option<&Vec<Vec<StyledCell>>>,
+    current: &[Vec<StyledCell>],
+    rows: usize,
+    cols: usize,
+) -> Option<ScrollHint> {
+    let prev = prev?;
+    if rows < 2 || cols == 0 {
+        return None;
+    }
+
+    for offset in 1..rows {
+        let scrolled_up = (0..rows.saturating_sub(offset)).all(|r| {
+            prev.get(r + offset)
+                .zip(current.get(r))
+                .is_some_and(|(a, b)| rows_equal(a, b, cols))
+        });
+        if scrolled_up {
+            return Some(ScrollHint::Up(offset as u16));
+        }
+    }
+
+    for offset in 1..rows {
+        let scrolled_down = (offset..rows).all(|r| {
+            prev.get(r - offset)
+                .zip(current.get(r))
+                .is_some_and(|(a, b)| rows_equal(a, b, cols))
+        });
+        if scrolled_down {
+            return Some(ScrollHint::Down(offset as u16));
+        }
+    }
+
+    None
+}
+
+fn rows_equal(a: &[StyledCell], b: &[StyledCell], cols: usize) -> bool {
+    a.iter().take(cols).eq(b.iter().take(cols))
+}
+
+fn apply_scroll_hint(
+    changed: &mut [Vec<bool>],
+    scroll_hint: Option<ScrollHint>,
+    rows: usize,
+    cols: usize,
+) {
+    let Some(hint) = scroll_hint else {
+        return;
+    };
+
+    match hint {
+        ScrollHint::Up(lines) => {
+            let preserved = rows.saturating_sub(lines as usize);
+            for row in changed.iter_mut().take(preserved) {
+                for cell in row.iter_mut().take(cols) {
+                    *cell = false;
+                }
+            }
+        }
+        ScrollHint::Down(lines) => {
+            let start = (lines as usize).min(rows);
+            for row in changed
+                .iter_mut()
+                .skip(start)
+                .take(rows.saturating_sub(start))
+            {
+                for cell in row.iter_mut().take(cols) {
+                    *cell = false;
+                }
+            }
+        }
+    }
 }
 
 fn write_cell(
@@ -782,5 +923,87 @@ mod tests {
         let stripped = strip_byte_sequence(b"xxSTARTmiddlexxSTARTtail", b"START");
 
         assert_eq!(stripped, b"xxmiddlexxtail".to_vec());
+    }
+
+    #[test]
+    fn row_dirty_spans_groups_contiguous_changed_cells() {
+        let changed = vec![vec![false, true, true, false, true, false, true, true]];
+
+        let spans = row_dirty_spans(&changed, 0);
+
+        assert_eq!(spans, vec![(1, 2), (4, 4), (6, 7)]);
+        assert!(row_dirty_spans(&changed, 1).is_empty());
+    }
+
+    #[test]
+    fn detect_scroll_hint_finds_single_line_up_scroll() {
+        let blank = StyledCell::blank(None);
+        let prev = vec![
+            vec![cell_with("a", &blank), cell_with("a", &blank)],
+            vec![cell_with("b", &blank), cell_with("b", &blank)],
+            vec![cell_with("c", &blank), cell_with("c", &blank)],
+        ];
+        let current = vec![
+            vec![cell_with("b", &blank), cell_with("b", &blank)],
+            vec![cell_with("c", &blank), cell_with("c", &blank)],
+            vec![cell_with("d", &blank), cell_with("d", &blank)],
+        ];
+
+        assert_eq!(
+            detect_scroll_hint(Some(&prev), &current, 3, 2),
+            Some(ScrollHint::Up(1))
+        );
+    }
+
+    #[test]
+    fn apply_scroll_hint_keeps_only_new_edge_row_dirty() {
+        let mut changed = vec![vec![true; 3], vec![true; 3], vec![true; 3]];
+
+        apply_scroll_hint(&mut changed, Some(ScrollHint::Up(1)), 3, 3);
+
+        assert_eq!(changed[0], vec![false; 3]);
+        assert_eq!(changed[1], vec![false; 3]);
+        assert_eq!(changed[2], vec![true; 3]);
+    }
+
+    #[test]
+    fn detect_scroll_hint_finds_multi_line_up_scroll() {
+        let blank = StyledCell::blank(None);
+        let prev = vec![
+            vec![cell_with("a", &blank)],
+            vec![cell_with("b", &blank)],
+            vec![cell_with("c", &blank)],
+            vec![cell_with("d", &blank)],
+        ];
+        let current = vec![
+            vec![cell_with("c", &blank)],
+            vec![cell_with("d", &blank)],
+            vec![cell_with("x", &blank)],
+            vec![cell_with("y", &blank)],
+        ];
+
+        assert_eq!(
+            detect_scroll_hint(Some(&prev), &current, 4, 1),
+            Some(ScrollHint::Up(2))
+        );
+    }
+
+    #[test]
+    fn collect_terminal_state_clamps_cursor_to_screen_bounds() {
+        let mut parser = vt100::Parser::new(2, 3, 0);
+        parser.process(b"\x1b[99;99H");
+        parser.process(b"\x1b[?25l");
+
+        let state = collect_terminal_state(parser.screen(), 2, 3);
+
+        assert_eq!(state.cursor_row, 1);
+        assert_eq!(state.cursor_col, 2);
+        assert!(!state.cursor_visible);
+    }
+
+    fn cell_with(text: &str, blank: &StyledCell) -> StyledCell {
+        let mut cell = blank.clone();
+        cell.text = text.to_string();
+        cell
     }
 }

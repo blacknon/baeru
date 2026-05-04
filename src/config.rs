@@ -140,7 +140,12 @@ fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     let cwd = env::current_dir().ok();
     let xdg_config_home = env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let home = env::var_os("HOME").map(PathBuf::from);
-    resolve_config_path_from(explicit, cwd.as_deref(), xdg_config_home.as_deref(), home.as_deref())
+    resolve_config_path_from(
+        explicit,
+        cwd.as_deref(),
+        xdg_config_home.as_deref(),
+        home.as_deref(),
+    )
 }
 
 fn resolve_config_path_from(
@@ -511,7 +516,8 @@ profiles:
         let home = base.join("home");
         fs::create_dir_all(&cwd).expect("cwd dir should exist");
         fs::create_dir_all(xdg.join("baeru")).expect("xdg dir should exist");
-        fs::create_dir_all(home.join(".config").join("baeru")).expect("home config dir should exist");
+        fs::create_dir_all(home.join(".config").join("baeru"))
+            .expect("home config dir should exist");
 
         let explicit = base.join("explicit.yml");
         let local = cwd.join("baeru.yml");
