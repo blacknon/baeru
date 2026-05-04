@@ -1,0 +1,651 @@
+use crate::{
+    keymap::KeyMapper,
+    model::{EffectKind, Feature, Rgb, Runtime, Theme, ALT_SCREEN_ENTER_SEQUENCES},
+    support::{exit_with_status, sleep_frame, spawn_direct},
+    theme::SgrRewriter,
+};
+use anyhow::{anyhow, Result};
+use crossterm::{
+    cursor::{Hide, Show},
+    execute,
+    terminal::{
+        disable_raw_mode, enable_raw_mode, size, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
+};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::{
+    collections::HashMap,
+    ffi::OsString,
+    io::{self, IsTerminal, Read, Write},
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
+
+pub(crate) fn run_tui_backend(rt: Runtime) -> Result<()> {
+    if rt.features.contains(&Feature::LiveRender) {
+        return run_live_render(rt);
+    }
+    if rt.features.contains(&Feature::Splash) {
+        return run_splash(rt);
+    }
+    if rt.features.contains(&Feature::Reveal) {
+        return run_reveal(rt);
+    }
+    let theme = rt
+        .features
+        .contains(&Feature::LiveColor)
+        .then_some(rt.theme.clone());
+    let keymap = if rt.features.contains(&Feature::Keymap) {
+        rt.keymap.clone()
+    } else {
+        HashMap::new()
+    };
+    run_pty_passthrough(rt, theme, keymap)
+}
+
+fn run_splash(rt: Runtime) -> Result<()> {
+    let guard = TerminalGuard::enter(true)?;
+    let mut out = io::stdout();
+    execute!(out, Hide, Clear(ClearType::All))?;
+    let logo = "baeru";
+    for frame in 0..rt.frames {
+        let ratio = frame as f32 / rt.frames.saturating_sub(1).max(1) as f32;
+        execute!(out, crossterm::cursor::MoveTo(0, 0), Clear(ClearType::All))?;
+        write!(out, "{}\r\n", coalesce_text(logo, ratio, rt.effect))?;
+        write!(out, "making terminal apps glow up...\r\n")?;
+        out.flush()?;
+        sleep_frame(rt.duration_ms, rt.frames);
+    }
+    execute!(out, Show, Clear(ClearType::All))?;
+    drop(guard);
+    spawn_direct(&rt.command)
+}
+
+fn run_live_render(rt: Runtime) -> Result<()> {
+    let (cols, rows) = size().unwrap_or((80, 24));
+    let mut session = PtySession::spawn(&rt.command, rows, cols)?;
+    let _guard = TerminalGuard::enter(true)?;
+
+    let writer = Arc::new(Mutex::new(session.writer));
+    let writer_for_input = writer.clone();
+    let keymap = rt.keymap.clone();
+    let _input_handle = thread::spawn(move || -> io::Result<()> {
+        let mut stdin = io::stdin();
+        let mut buf = [0u8; 1024];
+        let mapper = KeyMapper::new(keymap);
+        loop {
+            let n = stdin.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            let out = mapper.map_bytes(&buf[..n]);
+            let mut w = writer_for_input.lock().unwrap();
+            w.write_all(&out)?;
+            w.flush()?;
+        }
+        Ok(())
+    });
+
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let mut prev: Option<Vec<Vec<StyledCell>>> = None;
+    let mut buf = [0u8; 8192];
+    let mut stdout = io::stdout();
+    execute!(
+        stdout,
+        Clear(ClearType::All),
+        crossterm::cursor::MoveTo(0, 0)
+    )?;
+
+    loop {
+        match session.reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                parser.process(&buf[..n]);
+                let current = collect_screen(parser.screen(), rows, cols, &rt.theme);
+                let changed = diff_screen(prev.as_ref(), &current, rows as usize, cols as usize);
+                draw_live_screen(
+                    &mut stdout,
+                    &current,
+                    &changed,
+                    rows as usize,
+                    cols as usize,
+                    &rt.theme,
+                )?;
+                prev = Some(current);
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    let status = session.child.wait()?;
+    exit_with_status(status.exit_code() as i32);
+}
+
+fn run_reveal(rt: Runtime) -> Result<()> {
+    let (cols, rows) = size().unwrap_or((80, 24));
+    let mut session = PtySession::spawn(&rt.command, rows, cols)?;
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let deadline = Instant::now() + Duration::from_millis(rt.capture_ms);
+    let mut buf = [0u8; 8192];
+    let mut captured = Vec::new();
+    while Instant::now() < deadline {
+        match session.reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                parser.process(&buf[..n]);
+                captured.extend_from_slice(&buf[..n]);
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    let emulate_alt_screen = contains_alt_screen_enter_sequence(&captured);
+    if emulate_alt_screen {
+        execute!(io::stdout(), EnterAlternateScreen)?;
+    }
+
+    let screen = collect_screen(parser.screen(), rows, cols, &rt.theme);
+    animate_styled_reveal(&screen, rows, cols, rt.frames, rt.duration_ms, rt.effect)?;
+
+    let theme = if rt.no_theme_after_reveal || !rt.features.contains(&Feature::LiveColor) {
+        None
+    } else {
+        Some(rt.theme.clone())
+    };
+    let keymap = if rt.features.contains(&Feature::Keymap) {
+        rt.keymap.clone()
+    } else {
+        HashMap::new()
+    };
+    let initial_output = if emulate_alt_screen {
+        strip_alt_screen_enter_sequences(&captured)
+    } else {
+        captured
+    };
+    continue_passthrough(
+        session,
+        theme,
+        keymap,
+        Some(initial_output),
+        emulate_alt_screen,
+    )
+}
+
+fn run_pty_passthrough(
+    rt: Runtime,
+    theme: Option<Theme>,
+    keymap: HashMap<Vec<u8>, Vec<u8>>,
+) -> Result<()> {
+    let (cols, rows) = size().unwrap_or((80, 24));
+    let session = PtySession::spawn(&rt.command, rows, cols)?;
+    continue_passthrough(session, theme, keymap, None, false)
+}
+
+struct PtySession {
+    _pty: Box<dyn portable_pty::MasterPty>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
+}
+
+impl PtySession {
+    fn spawn(command: &[OsString], rows: u16, cols: u16) -> Result<Self> {
+        if command.is_empty() {
+            return Err(anyhow!("no command specified"));
+        }
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let mut cmd = CommandBuilder::new(&command[0]);
+        for arg in &command[1..] {
+            cmd.arg(arg);
+        }
+        let child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+        let reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
+        Ok(Self {
+            _pty: pair.master,
+            child,
+            reader,
+            writer,
+        })
+    }
+}
+
+fn continue_passthrough(
+    mut session: PtySession,
+    theme: Option<Theme>,
+    keymap: HashMap<Vec<u8>, Vec<u8>>,
+    initial_output: Option<Vec<u8>>,
+    leave_alt_screen_on_exit: bool,
+) -> Result<()> {
+    let use_raw = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let _guard = TerminalGuard::enter(use_raw)?;
+    let writer = Arc::new(Mutex::new(session.writer));
+    let writer_for_input = writer.clone();
+
+    let _input_handle = thread::spawn(move || -> io::Result<()> {
+        let mut stdin = io::stdin();
+        let mut buf = [0u8; 1024];
+        let mapper = KeyMapper::new(keymap);
+        loop {
+            let n = stdin.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            let out = mapper.map_bytes(&buf[..n]);
+            let mut w = writer_for_input.lock().unwrap();
+            w.write_all(&out)?;
+            w.flush()?;
+        }
+        Ok(())
+    });
+
+    let mut out = io::stdout();
+    let mut rewriter = theme.map(SgrRewriter::new);
+    if let Some(initial) = initial_output.as_deref() {
+        if let Some(rw) = rewriter.as_mut() {
+            let bytes = rw.feed(initial);
+            out.write_all(&bytes)?;
+        } else {
+            out.write_all(initial)?;
+        }
+        out.flush()?;
+    }
+    let mut buf = [0u8; 8192];
+    loop {
+        match session.reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if let Some(rw) = rewriter.as_mut() {
+                    let bytes = rw.feed(&buf[..n]);
+                    out.write_all(&bytes)?;
+                } else {
+                    out.write_all(&buf[..n])?;
+                }
+                out.flush()?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    let status = session.child.wait()?;
+    if leave_alt_screen_on_exit {
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+    exit_with_status(status.exit_code() as i32);
+}
+
+fn contains_alt_screen_enter_sequence(bytes: &[u8]) -> bool {
+    ALT_SCREEN_ENTER_SEQUENCES.iter().any(|pattern| {
+        bytes
+            .windows(pattern.len())
+            .any(|window| window == *pattern)
+    })
+}
+
+fn strip_alt_screen_enter_sequences(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    for pattern in ALT_SCREEN_ENTER_SEQUENCES {
+        out = strip_byte_sequence(&out, pattern);
+    }
+    out
+}
+
+fn strip_byte_sequence(bytes: &[u8], needle: &[u8]) -> Vec<u8> {
+    if needle.is_empty() {
+        return bytes.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + needle.len() <= bytes.len() && &bytes[i..i + needle.len()] == needle {
+            i += needle.len();
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+struct TerminalGuard {
+    raw_mode_enabled: bool,
+    cursor_hidden: bool,
+}
+
+impl TerminalGuard {
+    fn enter(raw_mode: bool) -> Result<Self> {
+        if raw_mode {
+            enable_raw_mode()?;
+        }
+        execute!(io::stdout(), Hide)?;
+        Ok(Self {
+            raw_mode_enabled: raw_mode,
+            cursor_hidden: true,
+        })
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if self.cursor_hidden {
+            let _ = execute!(io::stdout(), Show, crossterm::style::ResetColor);
+        }
+        if self.raw_mode_enabled {
+            let _ = disable_raw_mode();
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StyledCell {
+    text: String,
+    fg: Rgb,
+    bg: Rgb,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+    inverse: bool,
+    wide_continuation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderStyle {
+    fg: Rgb,
+    bg: Rgb,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+}
+
+fn collect_screen(
+    screen: &vt100::Screen,
+    rows: u16,
+    cols: u16,
+    theme: &Theme,
+) -> Vec<Vec<StyledCell>> {
+    let mut result = Vec::new();
+    for row in 0..rows {
+        let mut out_row = Vec::new();
+        for col in 0..cols {
+            if let Some(cell) = screen.cell(row, col) {
+                let fg = theme.map_vt_color(cell.fgcolor(), true);
+                let bg = theme.map_vt_color(cell.bgcolor(), false);
+                out_row.push(StyledCell {
+                    text: if cell.has_contents() {
+                        cell.contents().to_string()
+                    } else {
+                        " ".to_string()
+                    },
+                    fg,
+                    bg,
+                    bold: cell.bold(),
+                    dim: cell.dim(),
+                    italic: cell.italic(),
+                    underline: cell.underline(),
+                    inverse: cell.inverse(),
+                    wide_continuation: cell.is_wide_continuation(),
+                });
+            } else {
+                out_row.push(StyledCell::blank(theme));
+            }
+        }
+        result.push(out_row);
+    }
+    result
+}
+
+impl StyledCell {
+    fn blank(theme: &Theme) -> Self {
+        Self {
+            text: " ".to_string(),
+            fg: theme.default_fg_rgb(),
+            bg: theme.default_bg_rgb(),
+            bold: false,
+            dim: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+            wide_continuation: false,
+        }
+    }
+}
+
+fn animate_styled_reveal(
+    cells: &[Vec<StyledCell>],
+    rows: u16,
+    cols: u16,
+    frames: usize,
+    duration_ms: u64,
+    effect: EffectKind,
+) -> Result<()> {
+    let _guard = TerminalGuard::enter(true)?;
+    let mut out = io::stdout();
+    execute!(out, Clear(ClearType::All), crossterm::cursor::MoveTo(0, 0))?;
+    for frame in 0..frames {
+        let ratio = frame as f32 / frames.saturating_sub(1).max(1) as f32;
+        execute!(out, crossterm::cursor::MoveTo(0, 0))?;
+        for (r, row) in cells.iter().enumerate().take(rows as usize) {
+            let mut style_state = None;
+            for (c, cell) in row.iter().enumerate().take(cols as usize) {
+                if cell.wide_continuation {
+                    continue;
+                }
+                let text = reveal_text_for_cell(cell, r, c, frame, ratio, effect);
+                write_cell(&mut out, cell, text, &mut style_state)?;
+            }
+            write!(out, "\x1b[0m\r\n")?;
+        }
+        out.flush()?;
+        sleep_frame(duration_ms, frames);
+    }
+    execute!(out, crossterm::cursor::MoveTo(0, 0))?;
+    for row in cells {
+        let mut style_state = None;
+        for cell in row {
+            if !cell.wide_continuation {
+                write_cell(&mut out, cell, &cell.text, &mut style_state)?;
+            }
+        }
+        write!(out, "\x1b[0m\r\n")?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+fn reveal_text_for_cell(
+    cell: &StyledCell,
+    row: usize,
+    col: usize,
+    frame: usize,
+    ratio: f32,
+    effect: EffectKind,
+) -> &str {
+    match effect {
+        EffectKind::Plain => &cell.text,
+        EffectKind::Sweep => {
+            let width_gate = (col as f32 + 1.0) / ((col + 8) as f32);
+            if ratio >= width_gate.clamp(0.0, 1.0) {
+                &cell.text
+            } else {
+                " "
+            }
+        }
+        EffectKind::Fade => {
+            if ratio >= 0.65 || cell.text.trim().is_empty() {
+                &cell.text
+            } else {
+                " "
+            }
+        }
+        EffectKind::Coalesce => {
+            let appear_at = ((row * 17 + col * 7) % 100) as f32 / 100.0;
+            let reveal = ((ratio - appear_at * 0.55) / 0.45).clamp(0.0, 1.0);
+            if reveal >= 0.98 {
+                &cell.text
+            } else if reveal <= 0.05 || cell.text.trim().is_empty() {
+                " "
+            } else {
+                reveal_noise_symbol(row, col, frame)
+            }
+        }
+    }
+}
+
+fn reveal_noise_symbol(row: usize, col: usize, frame: usize) -> &'static str {
+    const SYMBOLS: [&str; 8] = ["░", "▒", "▓", "◆", "◇", "✦", "✧", "♡"];
+    SYMBOLS[(row + col + frame) % SYMBOLS.len()]
+}
+
+fn diff_screen(
+    prev: Option<&Vec<Vec<StyledCell>>>,
+    current: &[Vec<StyledCell>],
+    rows: usize,
+    cols: usize,
+) -> Vec<Vec<bool>> {
+    let mut changed = vec![vec![false; cols]; rows];
+    let Some(prev) = prev else {
+        for row in &mut changed {
+            for cell in row {
+                *cell = true;
+            }
+        }
+        return changed;
+    };
+    for (r, row) in changed.iter_mut().enumerate().take(rows) {
+        for (c, cell_changed) in row.iter_mut().enumerate().take(cols) {
+            *cell_changed = prev.get(r).and_then(|prev_row| prev_row.get(c))
+                != current.get(r).and_then(|current_row| current_row.get(c));
+        }
+    }
+    changed
+}
+
+fn draw_live_screen(
+    out: &mut io::Stdout,
+    cells: &[Vec<StyledCell>],
+    changed: &[Vec<bool>],
+    rows: usize,
+    cols: usize,
+    theme: &Theme,
+) -> io::Result<()> {
+    execute!(out, crossterm::cursor::MoveTo(0, 0))?;
+    let flash_fg = theme.default_bg_rgb();
+    let flash_bg = theme.default_fg_rgb();
+    for r in 0..rows {
+        let mut style_state = None;
+        for c in 0..cols {
+            let cell = &cells[r][c];
+            if cell.wide_continuation {
+                continue;
+            }
+            if changed[r][c] && !cell.text.trim().is_empty() {
+                let mut flash = cell.clone();
+                flash.fg = flash_fg;
+                flash.bg = flash_bg;
+                flash.bold = true;
+                write_cell(out, &flash, &cell.text, &mut style_state)?;
+            } else {
+                write_cell(out, cell, &cell.text, &mut style_state)?;
+            }
+        }
+        write!(out, "\x1b[0m\r\n")?;
+    }
+    out.flush()
+}
+
+fn write_cell(
+    out: &mut io::Stdout,
+    cell: &StyledCell,
+    text: &str,
+    style_state: &mut Option<RenderStyle>,
+) -> io::Result<()> {
+    let (fg, bg) = if cell.inverse {
+        (cell.bg, cell.fg)
+    } else {
+        (cell.fg, cell.bg)
+    };
+    let next_style = RenderStyle {
+        fg,
+        bg,
+        bold: cell.bold,
+        dim: cell.dim,
+        italic: cell.italic,
+        underline: cell.underline,
+    };
+    if style_state.as_ref() != Some(&next_style) {
+        write!(
+            out,
+            "\x1b[0m\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m",
+            next_style.fg.0,
+            next_style.fg.1,
+            next_style.fg.2,
+            next_style.bg.0,
+            next_style.bg.1,
+            next_style.bg.2
+        )?;
+        if next_style.bold {
+            write!(out, "\x1b[1m")?;
+        }
+        if next_style.dim {
+            write!(out, "\x1b[2m")?;
+        }
+        if next_style.italic {
+            write!(out, "\x1b[3m")?;
+        }
+        if next_style.underline {
+            write!(out, "\x1b[4m")?;
+        }
+        *style_state = Some(next_style);
+    }
+    write!(out, "{}", text)
+}
+
+fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
+    match effect {
+        EffectKind::Plain => text.to_string(),
+        EffectKind::Sweep => {
+            let count = text.chars().count().max(1);
+            let visible = (ratio * count as f32).ceil() as usize;
+            text.chars()
+                .enumerate()
+                .map(|(idx, ch)| if idx < visible { ch } else { ' ' })
+                .collect()
+        }
+        EffectKind::Fade => {
+            if ratio >= 0.6 {
+                text.to_string()
+            } else {
+                " ".repeat(text.chars().count())
+            }
+        }
+        EffectKind::Coalesce => {
+            let symbols = ['░', '▒', '▓', '◆', '◇', '✦', '✧'];
+            text.chars()
+                .enumerate()
+                .map(|(idx, ch)| {
+                    let threshold = (idx as f32 / text.chars().count().max(1) as f32) * 0.5;
+                    if ratio > threshold {
+                        ch
+                    } else {
+                        symbols[(idx + (ratio * 100.0) as usize) % symbols.len()]
+                    }
+                })
+                .collect()
+        }
+    }
+}

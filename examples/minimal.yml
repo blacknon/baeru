@@ -6,4 +6,8 @@ profiles:
     features:
       - reveal
       - live_color
-    theme_file: ../themes/jirai-pink.yml
+    theme_file: themes/jirai-pink.yml
+
+  # Example custom themes live under examples/themes/.
+  # For an Eva Unit-01 inspired htop palette swap, try:
+  # theme_file: themes/eva-unit-01-htop.yml

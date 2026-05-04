@@ -1,0 +1,50 @@
+name: gundam-tricolor-htop
+default_fg: "#f3f6ff"
+default_bg: "#08111f"
+force_default: true
+palette_map:
+  0: "#f4d84a"
+  1: "#ff5a5f"
+  2: "#2f5eff"
+  3: "#ffd84a"
+  4: "#3f7dff"
+  5: "#c56bff"
+  6: "#f3f6ff"
+  7: "#e7eefc"
+  8: "#8b97aa"
+  9: "#ff8a8f"
+  10: "#9fc2ff"
+  11: "#ffe27a"
+  12: "#7aa2ff"
+  13: "#ff9d9d"
+  14: "#ffe27a"
+  15: "#ffffff"
+background_palette_map:
+  0: "#08111f"
+  1: "#3a1018"
+  2: "#10254f"
+  3: "#433812"
+  4: "#0f214a"
+  5: "#31174a"
+  6: "#263245"
+  7: "#3e4a61"
+  8: "#1c2638"
+  9: "#5a1d27"
+  10: "#20355c"
+  11: "#5a4b16"
+  12: "#1d3470"
+  13: "#5a1d27"
+  14: "#5a4b16"
+  15: "#5d6880"
+foreground:
+  - { at: 0.00, color: "#1b2d66" }
+  - { at: 0.32, color: "#2f5eff" }
+  - { at: 0.60, color: "#f4d84a" }
+  - { at: 0.82, color: "#ff5a5f" }
+  - { at: 1.00, color: "#ffffff" }
+background:
+  - { at: 0.00, color: "#08111f" }
+  - { at: 0.30, color: "#0f214a" }
+  - { at: 0.62, color: "#3a1018" }
+  - { at: 0.82, color: "#433812" }
+  - { at: 1.00, color: "#5d6880" }

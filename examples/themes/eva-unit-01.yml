@@ -1,0 +1,16 @@
+name: eva-unit-01
+default_fg: "#b8ff63"
+default_bg: "#0b0612"
+force_default: true
+foreground:
+  - { at: 0.00, color: "#2d1245" }
+  - { at: 0.22, color: "#56307f" }
+  - { at: 0.48, color: "#7dff3a" }
+  - { at: 0.74, color: "#b8ff63" }
+  - { at: 1.00, color: "#f0ffd6" }
+background:
+  - { at: 0.00, color: "#0b0612" }
+  - { at: 0.28, color: "#1a0f2a" }
+  - { at: 0.56, color: "#2c1242" }
+  - { at: 0.80, color: "#1f3a12" }
+  - { at: 1.00, color: "#4c7a17" }

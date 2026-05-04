@@ -1,0 +1,50 @@
+name: eva-unit-01-htop
+default_fg: "#d7d0ef"
+default_bg: "#0b0612"
+force_default: true
+palette_map:
+  0: "#c7ff72"
+  1: "#c02a6b"
+  2: "#7dff3a"
+  3: "#dfff4f"
+  4: "#6c3cc8"
+  5: "#b14cff"
+  6: "#44d98b"
+  7: "#d7d0ef"
+  8: "#7a6591"
+  9: "#ff5ca8"
+  10: "#b8ff63"
+  11: "#efff8c"
+  12: "#9c79ff"
+  13: "#ea86ff"
+  14: "#7dffc7"
+  15: "#fbf8ff"
+background_palette_map:
+  0: "#0b0612"
+  1: "#2a0d24"
+  2: "#13280c"
+  3: "#35380d"
+  4: "#1a1238"
+  5: "#2a1238"
+  6: "#103126"
+  7: "#3d3551"
+  8: "#241433"
+  9: "#5a1f46"
+  10: "#274314"
+  11: "#555919"
+  12: "#3a2770"
+  13: "#552a73"
+  14: "#19543a"
+  15: "#5f5876"
+foreground:
+  - { at: 0.00, color: "#2d1245" }
+  - { at: 0.22, color: "#56307f" }
+  - { at: 0.48, color: "#7dff3a" }
+  - { at: 0.74, color: "#b8ff63" }
+  - { at: 1.00, color: "#f0ffd6" }
+background:
+  - { at: 0.00, color: "#0b0612" }
+  - { at: 0.28, color: "#1a0f2a" }
+  - { at: 0.56, color: "#2c1242" }
+  - { at: 0.80, color: "#1f3a12" }
+  - { at: 1.00, color: "#4c7a17" }

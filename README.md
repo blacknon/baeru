@@ -17,10 +17,10 @@ This is a PoC intended as a base for further work with CodeX.
 
 ```bash
 cargo run -- --mode reveal -- htop
-cargo run -- --mode reveal --theme-file themes/jirai-pink.yml -- htop
-cargo run -- --mode color-live --theme-file themes/jirai-pink.yml -- htop
-cargo run -- --mode reveal --theme-file themes/jirai-pink.yml --keymap-file keymaps/htop-vim.yml -- htop
-cargo run -- --mode live-render --theme-file themes/jirai-pink.yml -- htop
+cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml -- htop
+cargo run -- --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
+cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml --keymap-file keymaps/htop-vim.yml -- htop
+cargo run -- --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
 cargo run -- --backend cli -- ls -la
 cargo run -- --backend cli -- git status
 ```
@@ -86,7 +86,7 @@ baeru --mode reveal --capture-ms 420 --duration-ms 900 -- htop
 Does not rebuild the screen. It simply passes the target PTY output through while rewriting ANSI SGR color sequences.
 
 ```bash
-baeru --mode color-live --theme-file themes/jirai-pink.yml -- htop
+baeru --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
 ```
 
 ### `splash`
@@ -102,7 +102,7 @@ baeru --mode splash -- htop
 Rebuilds the target TUI screen from VT100 state, redraws it from baeru, and briefly flashes cells that changed since the previous frame.
 
 ```bash
-baeru --mode live-render --theme-file themes/jirai-pink.yml -- htop
+baeru --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
 ```
 
 This is intentionally experimental. Unlike `color-live`, it does not simply pass the target output through. It parses terminal output, maintains a screen buffer, compares frames, and redraws the whole screen. This makes it useful for future advanced effects, but it is much more fragile than `reveal` or `color-live`.
@@ -179,6 +179,7 @@ profiles:
     backend: tui
     features:
       - reveal
+      - live_color
       - keymap
     effect: coalesce
     keymap_file: keymaps/htop-vim.yml
