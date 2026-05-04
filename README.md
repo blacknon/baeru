@@ -106,7 +106,14 @@ cargo run -- --backend cli -- ls -la
 cargo run -- --backend cli -- git status
 ```
 
-If `./baeru.yml` exists, it is loaded automatically:
+If no `--config-file` is given, `baeru` looks for config files in this order:
+
+- `./baeru.yml`
+- `$XDG_CONFIG_HOME/baeru/baeru.yml`
+- `~/.config/baeru/baeru.yml`
+- `~/.baeru.yml`
+
+For example:
 
 ```bash
 cargo run -- -- htop

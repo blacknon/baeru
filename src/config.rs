@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{Context, Result};
 use std::{
     collections::{BTreeSet, HashMap},
+    env,
     ffi::OsString,
     fs,
     io::{self, IsTerminal},
@@ -136,16 +137,35 @@ fn build_runtime_with_env(
 }
 
 fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
+    let cwd = env::current_dir().ok();
+    let xdg_config_home = env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let home = env::var_os("HOME").map(PathBuf::from);
+    resolve_config_path_from(explicit, cwd.as_deref(), xdg_config_home.as_deref(), home.as_deref())
+}
+
+fn resolve_config_path_from(
+    explicit: Option<&Path>,
+    cwd: Option<&Path>,
+    xdg_config_home: Option<&Path>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
     if let Some(path) = explicit {
         return Some(path.to_path_buf());
     }
 
-    let local = PathBuf::from("baeru.yml");
-    if local.exists() {
-        return Some(local);
+    let mut candidates = Vec::new();
+    if let Some(cwd) = cwd {
+        candidates.push(cwd.join("baeru.yml"));
+    }
+    if let Some(xdg) = xdg_config_home {
+        candidates.push(xdg.join("baeru").join("baeru.yml"));
+    }
+    if let Some(home) = home {
+        candidates.push(home.join(".config").join("baeru").join("baeru.yml"));
+        candidates.push(home.join(".baeru.yml"));
     }
 
-    None
+    candidates.into_iter().find(|path| path.exists())
 }
 
 fn resolve_backend(
@@ -483,11 +503,64 @@ profiles:
         assert!(!runtime.features.contains(&Feature::LiveColor));
     }
 
+    #[test]
+    fn resolve_config_path_prefers_explicit_then_local_then_xdg_then_home() {
+        let base = unique_temp_dir("baeru-config-locations");
+        let cwd = base.join("cwd");
+        let xdg = base.join("xdg");
+        let home = base.join("home");
+        fs::create_dir_all(&cwd).expect("cwd dir should exist");
+        fs::create_dir_all(xdg.join("baeru")).expect("xdg dir should exist");
+        fs::create_dir_all(home.join(".config").join("baeru")).expect("home config dir should exist");
+
+        let explicit = base.join("explicit.yml");
+        let local = cwd.join("baeru.yml");
+        let xdg_path = xdg.join("baeru").join("baeru.yml");
+        let home_config = home.join(".config").join("baeru").join("baeru.yml");
+        let home_dot = home.join(".baeru.yml");
+
+        fs::write(&home_dot, "profiles: []").expect("home dot config should be written");
+        assert_eq!(
+            resolve_config_path_from(None, Some(&cwd), None, Some(&home)),
+            Some(home_dot.clone())
+        );
+
+        fs::write(&home_config, "profiles: []").expect("home config should be written");
+        assert_eq!(
+            resolve_config_path_from(None, Some(&cwd), None, Some(&home)),
+            Some(home_config.clone())
+        );
+
+        fs::write(&xdg_path, "profiles: []").expect("xdg config should be written");
+        assert_eq!(
+            resolve_config_path_from(None, Some(&cwd), Some(&xdg), Some(&home)),
+            Some(xdg_path.clone())
+        );
+
+        fs::write(&local, "profiles: []").expect("local config should be written");
+        assert_eq!(
+            resolve_config_path_from(None, Some(&cwd), Some(&xdg), Some(&home)),
+            Some(local.clone())
+        );
+
+        fs::write(&explicit, "profiles: []").expect("explicit config should be written");
+        assert_eq!(
+            resolve_config_path_from(Some(&explicit), Some(&cwd), Some(&xdg), Some(&home)),
+            Some(explicit.clone())
+        );
+
+        let _ = fs::remove_dir_all(base);
+    }
+
     fn unique_temp_file(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time should move forward")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}-{nanos}"))
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        unique_temp_file(name)
     }
 }
