@@ -9,32 +9,58 @@ pub(crate) fn read_keymap(path: &Path) -> Result<KeymapFile> {
 
 pub(crate) struct KeyMapper {
     rules: Vec<(Vec<u8>, Vec<u8>)>,
+    pending: Vec<u8>,
 }
 
 impl KeyMapper {
     pub(crate) fn new(map: HashMap<Vec<u8>, Vec<u8>>) -> Self {
         let mut rules: Vec<_> = map.into_iter().collect();
         rules.sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
-        Self { rules }
+        Self {
+            rules,
+            pending: Vec::new(),
+        }
     }
 
-    pub(crate) fn map_bytes(&self, input: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(input.len());
-        let mut i = 0;
-        while i < input.len() {
-            let mut matched = false;
-            for (from, to) in &self.rules {
-                if input[i..].starts_with(from) {
-                    out.extend_from_slice(to);
-                    i += from.len();
-                    matched = true;
+    pub(crate) fn push_bytes(&mut self, input: &[u8]) -> Vec<u8> {
+        self.pending.extend_from_slice(input);
+        self.drain_ready(false)
+    }
+
+    pub(crate) fn flush_pending(&mut self) -> Vec<u8> {
+        self.drain_ready(true)
+    }
+
+    fn drain_ready(&mut self, flush_ambiguous: bool) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.pending.len());
+        while !self.pending.is_empty() {
+            let exact = self
+                .rules
+                .iter()
+                .find(|(from, _)| self.pending.starts_with(from))
+                .cloned();
+
+            let has_longer_prefix = self.rules.iter().any(|(from, _)| {
+                from.len() > self.pending.len() && from.starts_with(&self.pending)
+            });
+            if let Some((from, to)) = exact {
+                if has_longer_prefix && !flush_ambiguous {
                     break;
                 }
+                out.extend_from_slice(&to);
+                self.pending.drain(..from.len());
+                continue;
             }
-            if !matched {
-                out.push(input[i]);
-                i += 1;
+
+            let has_partial_prefix = self.rules.iter().any(|(from, _)| {
+                from.len() > self.pending.len() && from.starts_with(&self.pending)
+            });
+            if has_partial_prefix && !flush_ambiguous {
+                break;
             }
+
+            out.push(self.pending[0]);
+            self.pending.drain(..1);
         }
         out
     }
@@ -132,14 +158,39 @@ mod tests {
 
     #[test]
     fn key_mapper_prefers_longest_match() {
-        let mapper = KeyMapper::new(HashMap::from([
+        let mut mapper = KeyMapper::new(HashMap::from([
             (b"\x1b".to_vec(), b"E".to_vec()),
             (b"\x1b[A".to_vec(), b"UP".to_vec()),
         ]));
 
-        let mapped = mapper.map_bytes(b"\x1b[A");
+        let mapped = mapper.push_bytes(b"\x1b[A");
 
         assert_eq!(mapped, b"UP".to_vec());
+    }
+
+    #[test]
+    fn key_mapper_waits_for_split_escape_sequence() {
+        let mut mapper = KeyMapper::new(HashMap::from([(b"\x1b[A".to_vec(), b"UP".to_vec())]));
+
+        let first = mapper.push_bytes(b"\x1b");
+        let second = mapper.push_bytes(b"[A");
+
+        assert!(first.is_empty());
+        assert_eq!(second, b"UP".to_vec());
+    }
+
+    #[test]
+    fn key_mapper_flushes_ambiguous_escape_as_shorter_match() {
+        let mut mapper = KeyMapper::new(HashMap::from([
+            (b"\x1b".to_vec(), b"ESC".to_vec()),
+            (b"\x1b[A".to_vec(), b"UP".to_vec()),
+        ]));
+
+        let partial = mapper.push_bytes(b"\x1b");
+        let flushed = mapper.flush_pending();
+
+        assert!(partial.is_empty());
+        assert_eq!(flushed, b"ESC".to_vec());
     }
 
     #[test]

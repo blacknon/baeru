@@ -1,6 +1,6 @@
 [package]
 name = "baeru"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Cinematic reveal, ANSI themes, and keymaps for existing terminal apps"
 license = "MIT"
@@ -10,15 +10,15 @@ readme = "README.md"
 keywords = ["terminal", "tui", "ansi", "cli", "animation"]
 categories = ["command-line-utilities"]
 include = [
-  "src/**",
-  "Cargo.toml",
-  "Cargo.lock",
-  "README.md",
-  "LICENSE",
-  "themes/**",
-  "examples/minimal.yml",
-  "examples/keymaps/**",
-  "examples/themes/**",
+    "src/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "themes/**",
+    "examples/minimal.yml",
+    "examples/keymaps/**",
+    "examples/themes/**",
 ]
 
 [dependencies]
@@ -28,4 +28,5 @@ crossterm = "0.29"
 portable-pty = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
+signal-hook = "0.3"
 vt100 = "0.16"

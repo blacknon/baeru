@@ -14,10 +14,13 @@ use crossterm::{
     },
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+#[cfg(unix)]
+use signal_hook::{consts::signal::SIGWINCH, iterator::Signals};
 use std::{
     collections::HashMap,
     ffi::OsString,
     io::{self, IsTerminal, Read, Write},
+    sync::mpsc,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -69,24 +72,7 @@ fn run_live_render(rt: Runtime) -> Result<()> {
     let _guard = TerminalGuard::enter(true)?;
 
     let writer = Arc::new(Mutex::new(session.writer));
-    let writer_for_input = writer.clone();
-    let keymap = rt.keymap.clone();
-    let _input_handle = thread::spawn(move || -> io::Result<()> {
-        let mut stdin = io::stdin();
-        let mut buf = [0u8; 1024];
-        let mapper = KeyMapper::new(keymap);
-        loop {
-            let n = stdin.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            let out = mapper.map_bytes(&buf[..n]);
-            let mut w = writer_for_input.lock().unwrap();
-            w.write_all(&out)?;
-            w.flush()?;
-        }
-        Ok(())
-    });
+    let _input_handle = spawn_input_forwarder(writer.clone(), rt.keymap.clone());
 
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let mut prev: Option<Vec<Vec<StyledCell>>> = None;
@@ -186,7 +172,8 @@ fn run_pty_passthrough(
 }
 
 struct PtySession {
-    _pty: Box<dyn portable_pty::MasterPty>,
+    _pty: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+    _resize_watcher: ResizeWatcher,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
@@ -210,10 +197,14 @@ impl PtySession {
         }
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
-        let reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
+        let master = pair.master;
+        let reader = master.try_clone_reader()?;
+        let writer = master.take_writer()?;
+        let pty = Arc::new(Mutex::new(master));
+        let resize_watcher = ResizeWatcher::spawn(pty.clone());
         Ok(Self {
-            _pty: pair.master,
+            _pty: pty,
+            _resize_watcher: resize_watcher,
             child,
             reader,
             writer,
@@ -231,24 +222,7 @@ fn continue_passthrough(
     let use_raw = io::stdin().is_terminal() && io::stdout().is_terminal();
     let _guard = TerminalGuard::enter(use_raw)?;
     let writer = Arc::new(Mutex::new(session.writer));
-    let writer_for_input = writer.clone();
-
-    let _input_handle = thread::spawn(move || -> io::Result<()> {
-        let mut stdin = io::stdin();
-        let mut buf = [0u8; 1024];
-        let mapper = KeyMapper::new(keymap);
-        loop {
-            let n = stdin.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            let out = mapper.map_bytes(&buf[..n]);
-            let mut w = writer_for_input.lock().unwrap();
-            w.write_all(&out)?;
-            w.flush()?;
-        }
-        Ok(())
-    });
+    let _input_handle = spawn_input_forwarder(writer.clone(), keymap);
 
     let mut out = io::stdout();
     let mut rewriter = theme.map(SgrRewriter::new);
@@ -323,6 +297,112 @@ fn strip_byte_sequence(bytes: &[u8], needle: &[u8]) -> Vec<u8> {
 struct TerminalGuard {
     raw_mode_enabled: bool,
     cursor_hidden: bool,
+}
+
+const KEYMAP_PENDING_TIMEOUT: Duration = Duration::from_millis(35);
+
+fn spawn_input_forwarder(
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    keymap: HashMap<Vec<u8>, Vec<u8>>,
+) -> thread::JoinHandle<io::Result<()>> {
+    thread::spawn(move || -> io::Result<()> {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+
+        let _reader_handle = thread::spawn(move || -> io::Result<()> {
+            let mut stdin = io::stdin();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = stdin.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+            Ok(())
+        });
+
+        let mut mapper = KeyMapper::new(keymap);
+        loop {
+            match rx.recv_timeout(KEYMAP_PENDING_TIMEOUT) {
+                Ok(chunk) => {
+                    let mapped = mapper.push_bytes(&chunk);
+                    if !mapped.is_empty() {
+                        let mut w = writer.lock().unwrap();
+                        w.write_all(&mapped)?;
+                        w.flush()?;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let mapped = mapper.flush_pending();
+                    if !mapped.is_empty() {
+                        let mut w = writer.lock().unwrap();
+                        w.write_all(&mapped)?;
+                        w.flush()?;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let mapped = mapper.flush_pending();
+                    if !mapped.is_empty() {
+                        let mut w = writer.lock().unwrap();
+                        w.write_all(&mapped)?;
+                        w.flush()?;
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+struct ResizeWatcher {
+    #[cfg(unix)]
+    handle: signal_hook::iterator::Handle,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl ResizeWatcher {
+    fn spawn(pty: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>) -> Self {
+        #[cfg(unix)]
+        {
+            let mut signals = Signals::new([SIGWINCH]).expect("failed to register SIGWINCH");
+            let handle = signals.handle();
+            let join = thread::spawn(move || {
+                for _ in signals.forever() {
+                    if let Ok((cols, rows)) = size() {
+                        let _ = pty.lock().unwrap().resize(PtySize {
+                            rows,
+                            cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                    }
+                }
+            });
+            Self {
+                handle,
+                join: Some(join),
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = pty;
+            Self { join: None }
+        }
+    }
+}
+
+impl Drop for ResizeWatcher {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        self.handle.close();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
 }
 
 impl TerminalGuard {
