@@ -1,6 +1,6 @@
 [package]
 name = "baeru"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 description = "Cinematic reveal, ANSI themes, and keymaps for existing terminal apps"
 license = "MIT"
