@@ -1,0 +1,13 @@
+keymap:
+  j: down
+  k: up
+  h: left
+  l: right
+  g: home
+  G: end
+  ctrl-d: page-down
+  ctrl-u: page-up
+  ctrl-f: page-down
+  ctrl-b: page-up
+  r: f5
+  "/": f3

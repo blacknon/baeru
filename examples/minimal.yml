@@ -1,0 +1,9 @@
+profiles:
+  - name: htop-pink
+    match:
+      command: htop
+    backend: tui
+    features:
+      - reveal
+      - live_color
+    theme_file: ../themes/jirai-pink.yml

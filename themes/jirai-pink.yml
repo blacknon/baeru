@@ -1,0 +1,16 @@
+name: jirai-pink
+default_fg: "#ffcdeb"
+default_bg: "#120018"
+force_default: true
+foreground:
+  - { at: 0.00, color: "#84205c" }
+  - { at: 0.30, color: "#ff45ac" }
+  - { at: 0.62, color: "#ff8fd6" }
+  - { at: 0.84, color: "#ffcdeb" }
+  - { at: 1.00, color: "#fff2fa" }
+background:
+  - { at: 0.00, color: "#120018" }
+  - { at: 0.28, color: "#26002a" }
+  - { at: 0.55, color: "#570a41" }
+  - { at: 0.78, color: "#962369" }
+  - { at: 1.00, color: "#ff8fcf" }

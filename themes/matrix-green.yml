@@ -1,0 +1,13 @@
+name: matrix-green
+default_fg: "#b6ffd0"
+default_bg: "#001008"
+force_default: true
+foreground:
+  - { at: 0.00, color: "#004d26" }
+  - { at: 0.35, color: "#00aa55" }
+  - { at: 0.70, color: "#33ff99" }
+  - { at: 1.00, color: "#eafff2" }
+background:
+  - { at: 0.00, color: "#001008" }
+  - { at: 0.50, color: "#003018" }
+  - { at: 1.00, color: "#006633" }

@@ -1,0 +1,95 @@
+profiles:
+  - name: htop-jirai-vim
+    match:
+      command: htop
+      # path: /opt/homebrew/bin/htop
+    backend: tui
+    features:
+      - reveal
+      - keymap
+    effect: coalesce
+    keymap_file: keymaps/htop-vim.yml
+    capture_ms: 360
+    duration_ms: 720
+    frames: 24
+
+  - name: lazygit-matrix
+    match:
+      command: lazygit
+    backend: tui
+    features:
+      - reveal
+      - keymap
+    effect: coalesce
+    keymap:
+      ctrl-j: down
+      ctrl-k: up
+      ctrl-h: left
+      ctrl-l: right
+
+  - name: git-status-inline
+    match:
+      command: git
+      args_prefix: ["status"]
+    backend: cli
+    features:
+      - inline_animation
+    effect: sweep
+    duration_ms: 720
+    frames: 18
+    max_lines: 24
+    max_bytes: 120000
+
+  - name: ls-inline
+    match:
+      command: ls
+    backend: cli
+    features:
+      - inline_animation
+    effect: coalesce
+    duration_ms: 900
+    frames: 20
+    # max_lines: 16
+    # max_bytes: 80000
+
+  - name: df-inline
+    match:
+      command: df
+    backend: cli
+    features:
+      - inline_animation
+    effect: sweep
+    duration_ms: 700
+    frames: 18
+    # max_lines: 20
+    # max_bytes: 100000
+
+  - name: ps-inline
+    match:
+      command: ps
+    backend: cli
+    features:
+      - inline_animation
+    effect: plain
+
+  - name: cargo-test-inline
+    match:
+      command: cargo
+      args_prefix: ["test"]
+    backend: cli
+    features:
+      - inline_animation
+    effect: sweep
+    duration_ms: 900
+    frames: 18
+    max_lines: 20
+    max_bytes: 120000
+
+  - name: htop-live-render-experimental
+    match:
+      command: htop-live
+    backend: tui
+    features:
+      - live_render
+      - keymap
+    keymap_file: keymaps/htop-vim.yml
