@@ -384,7 +384,7 @@ profiles:
     features:
       - inline_animation
     effect: sweep
-    theme_file: "{}"
+    theme_file: '{}'
     cli_settled_color: "#b6ffd0"
     cli_gradient_start: "#004d26"
     cli_gradient_end: "#eafff2"

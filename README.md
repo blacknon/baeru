@@ -1,31 +1,47 @@
 # baeru
 
-Make existing terminal apps **baeru** — cinematic reveals, live ANSI themes, and per-command keymaps without patching the app.
+[![CI](https://github.com/blacknon/baeru/actions/workflows/ci.yml/badge.svg)](https://github.com/blacknon/baeru/actions/workflows/ci.yml)
 
-`baeru` is a wrapper for existing terminal applications and command output. It can:
+`baeru` is a Rust wrapper for existing terminal applications and command output.
+It adds presentation and interaction layers on top of tools you already use, without patching the target app itself.
 
-- reveal the initial screen of a TUI with a coalesce-style animation
-- recolor ANSI SGR output on the fly using YAML themes
+Today, the PoC can:
+
+- reveal the initial screen of a TUI with a cinematic startup animation
+- rewrite ANSI colors live using YAML themes
 - remap keys per command using YAML keymaps
 - animate ordinary CLI output inline below the prompt
-- apply command-specific profiles from `baeru.yml`
-- experimentally flash updated cells in a VT100-rebuilt live screen
+- switch behavior per command with `baeru.yml`
+- experiment with VT100-based live screen rendering and change highlighting
 
-This is a PoC intended as a base for further work with CodeX.
+## Demo
+
+### TUI reveal + live color
+
+![baeru htop demo](assets/htop-demo.gif)
+
+### CLI inline animation
+
+![baeru cli demo](assets/cli-demo.gif)
+
+## Concept
+
+`baeru` is built around two ideas:
+
+- `backend`
+  Choose the execution path: `tui`, `cli`, or `raw`
+- `features`
+  Layer behaviors such as `reveal`, `live_color`, `keymap`, and `inline_animation`
+
+That separation makes it easier to say things like:
+
+- `htop` should use `reveal + live_color + keymap`
+- `vim` should stay close to passthrough
+- `ls` should use CLI animation only
 
 ## Quick start
 
-```bash
-cargo run -- --mode reveal -- htop
-cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml -- htop
-cargo run -- --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
-cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml --keymap-file keymaps/htop-vim.yml -- htop
-cargo run -- --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
-cargo run -- --backend cli -- ls -la
-cargo run -- --backend cli -- git status
-```
-
-Using profile config:
+Build and run:
 
 ```bash
 cargo run -- -- htop
@@ -33,13 +49,31 @@ cargo run -- -- lazygit
 cargo run -- -- ls -la
 ```
 
-If `./baeru.yml` exists, it is loaded automatically. You can still override it explicitly:
+Explicit examples:
+
+```bash
+cargo run -- --mode reveal -- htop
+cargo run -- --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
+cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml --keymap-file keymaps/htop-vim.yml -- htop
+cargo run -- --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
+cargo run -- --backend cli -- ls -la
+cargo run -- --backend cli -- git status
+```
+
+If `./baeru.yml` exists, it is loaded automatically:
+
+```bash
+cargo run -- -- htop
+cargo run -- -- ls -la
+```
+
+You can still point to a config explicitly:
 
 ```bash
 cargo run -- --config-file baeru.yml -- htop
 ```
 
-If no command is specified and stdin is a terminal, `htop` is used as a default PoC target:
+If no command is specified and stdin is a terminal, `htop` is used as the default PoC target:
 
 ```bash
 cargo run
@@ -47,11 +81,9 @@ cargo run
 
 ## Backends
 
-`baeru` has two main execution paths.
-
 ### `tui`
 
-Use this for interactive terminal applications such as `htop` or `lazygit`.
+For interactive terminal applications such as `htop` or `lazygit`.
 
 ```bash
 baeru --backend tui -- htop
@@ -60,7 +92,7 @@ baeru --mode reveal -- htop
 
 ### `cli`
 
-Use this for ordinary commands such as `ls`, `df`, or `git status`.
+For ordinary commands such as `ls`, `df`, or `git status`.
 
 ```bash
 baeru --backend cli -- ls -la
@@ -68,63 +100,100 @@ baeru --backend cli -- git status
 printf 'hello\nworld\n' | baeru --backend cli
 ```
 
-If you rely on profiles, `backend` is usually selected from `baeru.yml`.
+### `raw`
 
-## Modes / Features
+For cases where you want plain passthrough behavior without effects.
+
+## Features
 
 ### `reveal`
 
-Starts the target command in a PTY, captures the initial terminal screen for a short period, renders a coalesce-style reveal animation, then switches to normal PTY passthrough.
+Starts the target command in a PTY, captures the initial screen briefly, renders a startup animation, then switches to normal PTY passthrough.
 
 ```bash
 baeru --mode reveal -- htop
 baeru --mode reveal --capture-ms 420 --duration-ms 900 -- htop
 ```
 
-### `color-live`
+### `live_color`
 
-Does not rebuild the screen. It simply passes the target PTY output through while rewriting ANSI SGR color sequences.
+Passes PTY output through while rewriting ANSI SGR colors.
 
 ```bash
 baeru --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
 ```
 
-### `splash`
+This now supports both:
 
-Shows a simple startup splash, then starts the command normally.
+- gradient-based recoloring
+- simple indexed ANSI palette replacement via `palette_map`
 
-```bash
-baeru --mode splash -- htop
-```
+### `keymap`
 
-### `live-render` experimental
+Rewrites key input per command using YAML mapping rules.
 
-Rebuilds the target TUI screen from VT100 state, redraws it from baeru, and briefly flashes cells that changed since the previous frame.
+### `inline_animation`
 
-```bash
-baeru --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
-```
+Animates CLI output inline below the prompt.
 
-This is intentionally experimental. Unlike `color-live`, it does not simply pass the target output through. It parses terminal output, maintains a screen buffer, compares frames, and redraws the whole screen. This makes it useful for future advanced effects, but it is much more fragile than `reveal` or `color-live`.
-
-### CLI effects
-
-For CLI backend output animation, the current implementation supports:
+Supported effects:
 
 - `coalesce`
 - `sweep`
 - `fade`
 - `plain`
 
-Example:
-
 ```bash
 baeru --backend cli --effect coalesce -- ls -la
 baeru --backend cli --effect sweep -- git status
 ```
 
+### `live-render` experimental
+
+Rebuilds the target TUI screen from VT100 state, redraws it from `baeru`, and flashes changed cells.
+
+```bash
+baeru --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
+```
+
+This is intentionally experimental and much more fragile than `reveal` or `live_color`.
+
+## Configuration
+
+## `baeru.yml`
+
+`baeru` resolves behavior from profiles matched against command name, exact path, and optional `args_prefix`.
+
+```yaml
+profiles:
+  - name: htop-jirai-vim
+    match:
+      command: htop
+    backend: tui
+    features:
+      - reveal
+      - live_color
+      - keymap
+    effect: coalesce
+    keymap_file: keymaps/htop-vim.yml
+    theme_file: examples/themes/jirai-pink.yml
+    capture_ms: 360
+    duration_ms: 720
+    frames: 24
+
+  - name: ls-inline
+    match:
+      command: ls
+    backend: cli
+    features:
+      - inline_animation
+    effect: coalesce
+    theme_file: themes/matrix-green.yml
+```
 
 ## Theme YAML
+
+Theme files support the original gradient-based recoloring style:
 
 ```yaml
 name: jirai-pink
@@ -143,7 +212,23 @@ background:
   - { at: 1.00, color: "#ff8fcf" }
 ```
 
-The current implementation maps source colors to the configured foreground/background gradients by luminance. This keeps the schema small while still changing the whole mood of existing TUIs.
+They also support simple palette replacement for indexed ANSI colors:
+
+```yaml
+name: gundam-tricolor-htop
+default_fg: "#f3f6ff"
+default_bg: "#08111f"
+force_default: true
+palette_map:
+  1: "#ff5a5f"
+  3: "#ffd84a"
+  4: "#3f7dff"
+  15: "#ffffff"
+background_palette_map:
+  4: "#0f214a"
+```
+
+This is especially useful for `htop`-style TUI recoloring where preserving rough semantic color roles matters more than luminance mapping.
 
 ## Keymap YAML
 
@@ -168,47 +253,72 @@ Supported key names include:
 - special keys: `enter`, `esc`, `tab`, `backspace`
 - single printable characters such as `j`, `k`, `/`
 
-## Profile config
+## Themes
 
-```yaml
-profiles:
-  - name: htop-jirai-vim
-    match:
-      command: htop
-      # path: /opt/homebrew/bin/htop
-    backend: tui
-    features:
-      - reveal
-      - live_color
-      - keymap
-    effect: coalesce
-    keymap_file: keymaps/htop-vim.yml
-    capture_ms: 360
-    duration_ms: 720
-    frames: 24
+There are two theme buckets right now:
 
-  - name: ls-inline
-    match:
-      command: ls
-    backend: cli
-    features:
-      - inline_animation
-    effect: coalesce
+- `themes/`
+  Built-in style examples that feel close to baseline usage
+- `examples/themes/`
+  More expressive or experimental sample themes
+
+Current example themes include:
+
+- `jirai-pink`
+- `eva-unit-01`
+- `eva-unit-01-htop`
+- `gundam-tricolor-htop`
+
+## Testing and CI
+
+CI runs on:
+
+- macOS
+- Linux
+- Windows
+
+The workflow checks:
+
+- `cargo fmt --check`
+- `cargo build --locked`
+- `cargo clippy --locked --all-targets -- -D warnings`
+- `cargo test --locked --quiet`
+
+Locally, the same commands are enough:
+
+```bash
+cargo fmt --check
+cargo build --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --quiet
 ```
 
-Profile matching currently checks the executable basename, exact path, and optional `args_prefix`.
+## Recording demo GIFs
+
+README demo GIFs are generated with [VHS](https://github.com/charmbracelet/vhs).
+
+Tape files live here:
+
+- `examples/vhs/htop-demo.tape`
+- `examples/vhs/cli-demo.tape`
+
+Regenerate the current demo assets with:
+
+```bash
+vhs examples/vhs/htop-demo.tape
+vhs examples/vhs/cli-demo.tape
+```
 
 ## Known limitations
 
-- This is a PoC; terminal restoration and signal handling should be hardened.
-- `reveal` captures a single approximate initial screen. Applications with unstable startup screens may need `--capture-ms` tuning.
-- `color-live` rewrites SGR colors only. It intentionally avoids rebuilding the whole screen.
+- This is still a PoC. Terminal restoration and signal handling can be hardened further.
+- `reveal` captures a single approximate startup screen. Very unstable startup screens may need `capture_ms` tuning.
 - `live-render` is experimental and may flicker or desynchronize on complex TUIs.
-- CLI inline animation is still a PoC. Multi-line output behavior depends on terminal behavior and is less robust than plain passthrough.
-- Key remapping is byte-sequence based. Complex keyboard protocols, mouse input, bracketed paste, and terminal-emulator-reserved shortcuts need more careful handling.
-- Mouse mapping is not implemented yet, but the architecture leaves room for a future `mousemap` layer.
-- Command-specific semantic adapters, such as an `htop` adapter that understands CPU bars/process rows/status areas, are intentionally future work.
+- CLI inline animation is still less robust than plain passthrough for some terminals and very large outputs.
+- Key remapping is byte-sequence based. Complex keyboard protocols, mouse input, bracketed paste, and emulator-reserved shortcuts need more careful handling.
+- Mouse mapping is not implemented yet, though the architecture leaves room for a future `mousemap` layer.
+- Command-specific semantic adapters are still future work.
 
-## Suggested next tasks
+## Notes for CodeX
 
-See [tmp/CODEX_TASKS.md](tmp/CODEX_TASKS.md) for concrete tasks to hand to CodeX.
+Concrete implementation notes and follow-up tasks live in [tmp/CODEX_TASKS.md](tmp/CODEX_TASKS.md) and [tmp/BAERU_BACKEND_FEATURES_DESIGN.md](tmp/BAERU_BACKEND_FEATURES_DESIGN.md).
