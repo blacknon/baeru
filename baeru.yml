@@ -7,8 +7,9 @@ profiles:
       - reveal
       - live_color
       - keymap
-      # - live-render
-    effect: coalesce
+      - live-render
+    # effect: coalesce
+    effect: matrix
     keymap_file: examples/keymaps/htop-vim.yml
     theme_file: examples/themes/jirai-pink.yml
     capture_ms: 360

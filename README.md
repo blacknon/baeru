@@ -169,6 +169,7 @@ For plain passthrough behavior without added effects.
 | TUI | `splash` | startup animation | stable PoC | simple pre-launch splash |
 | TUI | `live-render` | live redraw animation | experimental | VT100 rebuild + changed-cell flash |
 | CLI | `inline_animation` + `coalesce` | inline animation | stable PoC | noisy symbols converge into final text |
+| CLI | `inline_animation` + `matrix` | inline animation | stable PoC | column-biased digital-rain style convergence |
 | CLI | `inline_animation` + `sweep` | inline animation | stable PoC | left-to-right reveal |
 | CLI | `inline_animation` + `fade` | inline animation | stable PoC | delayed text appearance |
 | CLI | `inline_animation` + `plain` | passthrough-style | stable PoC | same backend path, no animation |
@@ -224,6 +225,7 @@ Animates CLI output inline below the prompt.
 Supported effects:
 
 - `coalesce`
+- `matrix`
 - `sweep`
 - `fade`
 - `plain`
@@ -249,13 +251,41 @@ Sample GIFs:
 
 ### `live-render` experimental
 
-Rebuilds the target TUI screen from VT100 state, redraws it from `baeru`, and flashes changed cells.
+Rebuilds the target TUI screen from VT100 state, redraws it from `baeru`, and animates changed cells during live updates.
 
 ```bash
 baeru --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
 ```
 
-This mode is intentionally experimental and much more fragile than `reveal` or `live_color`.
+This mode is still intentionally experimental, but it is no longer just a full-screen redraw toy.
+Current improvements include:
+
+- row-diff and dirty-row redraw instead of blind full-screen repaint
+- simple scroll hints for vertical updates
+- cursor visibility / cursor position restoration
+- PTY resize propagation and parser recreation on terminal resize
+- mouse / cursor-mode / bracketed-paste passthrough for better input fidelity
+- short live update animation with `coalesce` / `matrix` / `sweep` / `fade` / `plain`
+
+Recommended profile-style tuning:
+
+```yaml
+profiles:
+  - name: htop-live-render-experimental
+    match:
+      command: htop-live
+    backend: tui
+    features:
+      - live_render
+      - keymap
+    effect: coalesce
+    keymap_file: examples/keymaps/htop-vim.yml
+    live_render_duration_ms: 90
+    live_render_mouse_quiet_ms: 180
+```
+
+`live_render_duration_ms` controls the short redraw animation window.
+`live_render_mouse_quiet_ms` controls how long `baeru` stays in quieter redraw mode after wheel / drag / up-down style input.
 
 ## Configuration
 
@@ -294,6 +324,18 @@ profiles:
       - inline_animation
     effect: coalesce
     theme_file: themes/matrix-green.yml
+
+  - name: htop-live-render-experimental
+    match:
+      command: htop-live
+    backend: tui
+    features:
+      - live_render
+      - keymap
+    effect: coalesce
+    keymap_file: examples/keymaps/htop-vim.yml
+    live_render_duration_ms: 90
+    live_render_mouse_quiet_ms: 180
 ```
 
 ### Theme YAML
@@ -384,9 +426,9 @@ Example keymap files live under:
 
 - This is still a PoC. Terminal restoration and signal handling can be hardened further.
 - `reveal` captures a single approximate startup screen. Very unstable startup screens may need `capture_ms` tuning.
-- `live-render` is experimental and may flicker or desynchronize on complex TUIs.
+- `live-render` is experimental. It is more usable now, but complex TUIs may still flicker, briefly desynchronize, or lose some emulator-specific behavior.
 - CLI inline animation is still less robust than plain passthrough for some terminals and very large outputs.
-- Key remapping is byte-sequence based. Complex keyboard protocols, mouse input, bracketed paste, and emulator-reserved shortcuts need more careful handling.
+- Key remapping is byte-sequence based. Complex keyboard protocols and emulator-reserved shortcuts still need more careful handling.
 - Mouse mapping is not implemented yet, though the architecture leaves room for a future `mousemap` layer.
 - Command-specific semantic adapters are still future work.
 

@@ -46,6 +46,7 @@ pub(crate) enum Mode {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum EffectKind {
     Coalesce,
+    Matrix,
     Sweep,
     Fade,
     Plain,
@@ -234,5 +235,9 @@ pub(crate) const LIVE_RENDER_INPUT_MODE_ENABLE_SEQUENCES: &[&[u8]] = &[b"\x1b[?1
 
 pub(crate) const LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES: &[&[u8]] = &[b"\x1b[?1l", b"\x1b>"];
 
+pub(crate) const LIVE_RENDER_PASTE_MODE_ENABLE_SEQUENCES: &[&[u8]] = &[b"\x1b[?2004h"];
+
+pub(crate) const LIVE_RENDER_PASTE_MODE_DISABLE_SEQUENCES: &[&[u8]] = &[b"\x1b[?2004l"];
+
 pub(crate) const LIVE_RENDER_RESET_SEQUENCES: &[u8] =
-    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1l\x1b>";
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1l\x1b>\x1b[?2004l";

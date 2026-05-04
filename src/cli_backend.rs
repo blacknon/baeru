@@ -86,7 +86,7 @@ fn animate_cli_output(text: &str, rt: &Runtime) -> Result<bool> {
             let rendered = if frame == rt.frames {
                 line.clone()
             } else {
-                render_cli_frame(line, frame, row, rt.frames, rt.effect)
+                render_cli_frame(line, frame, row, tail_lines.len(), rt.frames, rt.effect)
             };
             write_cli_colored_line(&mut stdout, &rendered, fg)?;
         }
@@ -193,6 +193,7 @@ fn render_cli_frame(
     line: &str,
     frame: usize,
     row: usize,
+    total_rows: usize,
     total_frames: usize,
     effect: EffectKind,
 ) -> String {
@@ -201,6 +202,7 @@ fn render_cli_frame(
         EffectKind::Sweep => cli_sweep_frame(line, frame, total_frames),
         EffectKind::Fade => cli_fade_frame(line, frame, total_frames),
         EffectKind::Coalesce => cli_coalesce_frame(line, frame, row, total_frames),
+        EffectKind::Matrix => cli_matrix_frame(line, frame, row, total_rows, total_frames),
     }
 }
 
@@ -247,6 +249,54 @@ fn cli_coalesce_frame(line: &str, frame: usize, row: usize, total_frames: usize)
             }
         })
         .collect()
+}
+
+fn cli_matrix_frame(
+    line: &str,
+    frame: usize,
+    row: usize,
+    total_rows: usize,
+    total_frames: usize,
+) -> String {
+    let progress = frame as f32 / total_frames.max(1) as f32;
+    let chars: Vec<char> = line.chars().collect();
+
+    chars
+        .iter()
+        .enumerate()
+        .map(|(col, &ch)| {
+            if ch.is_whitespace() {
+                return ch;
+            }
+
+            let state = matrix_cell_state(row, col, total_rows.max(1), progress);
+            if state >= 1.0 {
+                ch
+            } else {
+                matrix_noise_symbol(row, col, frame)
+            }
+        })
+        .collect()
+}
+
+fn matrix_noise_symbol(row: usize, col: usize, frame: usize) -> char {
+    const SYMBOLS: [char; 8] = ['0', '1', '|', ':', '.', '+', '*', '#'];
+    SYMBOLS[(row * 19 + col * 11 + frame * 5) % SYMBOLS.len()]
+}
+
+fn matrix_cell_state(row: usize, col: usize, total_rows: usize, progress: f32) -> f32 {
+    let offset = pseudo_random_01(col as u64, 13) * 6.0;
+    let trail = 3.5 + pseudo_random_01(col as u64, 29) * 4.5;
+    let span = total_rows as f32 + trail + 6.0;
+    let head = progress.clamp(0.0, 1.0) * span - offset;
+    let distance = head - row as f32;
+    if distance < 0.0 {
+        -1.0
+    } else if distance <= trail {
+        0.0
+    } else {
+        1.0
+    }
 }
 
 fn pseudo_random_01(a: u64, b: u64) -> f32 {
@@ -297,6 +347,14 @@ mod tests {
     #[test]
     fn cli_coalesce_frame_preserves_whitespace() {
         let rendered = cli_coalesce_frame("a b", 0, 0, 10);
+        let chars: Vec<char> = rendered.chars().collect();
+
+        assert_eq!(chars[1], ' ');
+    }
+
+    #[test]
+    fn cli_matrix_frame_preserves_whitespace() {
+        let rendered = cli_matrix_frame("a b", 0, 0, 3, 10);
         let chars: Vec<char> = rendered.chars().collect();
 
         assert_eq!(chars[1], ' ');

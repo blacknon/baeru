@@ -12,3 +12,11 @@ profiles:
   # Example keymaps live under examples/keymaps/.
   # For an Eva Unit-01 inspired htop palette swap, try:
   # theme_file: examples/themes/eva-unit-01-htop.yml
+  #
+  # For a live-render experiment profile, try:
+  # backend: tui
+  # features:
+  #   - live_render
+  # effect: coalesce
+  # live_render_duration_ms: 90
+  # live_render_mouse_quiet_ms: 180

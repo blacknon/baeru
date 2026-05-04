@@ -4,10 +4,11 @@ use crate::{
         EffectKind, Feature, Rgb, Runtime, Theme, ALT_SCREEN_ENTER_SEQUENCES,
         LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES, LIVE_RENDER_INPUT_MODE_ENABLE_SEQUENCES,
         LIVE_RENDER_MOUSE_DISABLE_SEQUENCES, LIVE_RENDER_MOUSE_ENABLE_SEQUENCES,
+        LIVE_RENDER_PASTE_MODE_DISABLE_SEQUENCES, LIVE_RENDER_PASTE_MODE_ENABLE_SEQUENCES,
         LIVE_RENDER_RESET_SEQUENCES,
     },
     support::{exit_with_status, sleep_frame, spawn_direct},
-    theme::{indexed_color, SgrRewriter},
+    theme::SgrRewriter,
 };
 use anyhow::{anyhow, Result};
 use crossterm::{
@@ -172,11 +173,17 @@ fn animate_live_render_update(
     let ratios = live_render_effect_ratios(base_frame.effect);
     let total_ms = duration_ms.clamp(45, 120);
     let per_frame_ms = (total_ms / ratios.len().max(1) as u64).max(1);
-    let final_changed = full_screen_changed(cells);
+    let full_redraw = full_screen_changed(cells);
+    let no_highlight = no_screen_changed(cells);
 
     for (idx, ratio) in ratios.iter().copied().enumerate() {
-        let frame_changed = if idx + 1 == ratios.len() {
-            &final_changed
+        let redraw_mask = if idx + 1 == ratios.len() {
+            &full_redraw
+        } else {
+            changed
+        };
+        let highlight_mask = if idx + 1 == ratios.len() {
+            &no_highlight
         } else {
             changed
         };
@@ -184,7 +191,8 @@ fn animate_live_render_update(
             out,
             cells,
             state,
-            frame_changed,
+            redraw_mask,
+            highlight_mask,
             theme,
             LiveRenderFrame {
                 scroll_hint: if idx == 0 {
@@ -211,11 +219,16 @@ fn live_render_effect_ratios(effect: EffectKind) -> &'static [f32] {
         EffectKind::Fade => &[0.35, 1.0],
         EffectKind::Sweep => &[0.25, 0.65, 1.0],
         EffectKind::Coalesce => &[0.12, 0.38, 0.72, 1.0],
+        EffectKind::Matrix => &[0.08, 0.24, 0.45, 0.72, 1.0],
     }
 }
 
 fn full_screen_changed(cells: &[Vec<StyledCell>]) -> Vec<Vec<bool>> {
     cells.iter().map(|row| vec![true; row.len()]).collect()
+}
+
+fn no_screen_changed(cells: &[Vec<StyledCell>]) -> Vec<Vec<bool>> {
+    cells.iter().map(|row| vec![false; row.len()]).collect()
 }
 
 fn run_reveal(rt: Runtime) -> Result<()> {
@@ -412,6 +425,24 @@ fn forward_live_passthrough_sequences(
         }
     }
     for pattern in LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES {
+        for _ in bytes
+            .windows(pattern.len())
+            .filter(|window| *window == *pattern)
+        {
+            out.write_all(pattern)?;
+            wrote_any = true;
+        }
+    }
+    for pattern in LIVE_RENDER_PASTE_MODE_ENABLE_SEQUENCES {
+        for _ in bytes
+            .windows(pattern.len())
+            .filter(|window| *window == *pattern)
+        {
+            out.write_all(pattern)?;
+            wrote_any = true;
+        }
+    }
+    for pattern in LIVE_RENDER_PASTE_MODE_DISABLE_SEQUENCES {
         for _ in bytes
             .windows(pattern.len())
             .filter(|window| *window == *pattern)
@@ -642,8 +673,8 @@ impl Drop for TerminalGuard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StyledCell {
     text: String,
-    fg: Rgb,
-    bg: Rgb,
+    fg: DisplayColor,
+    bg: DisplayColor,
     bold: bool,
     dim: bool,
     italic: bool,
@@ -654,12 +685,19 @@ struct StyledCell {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenderStyle {
-    fg: Rgb,
-    bg: Rgb,
+    fg: DisplayColor,
+    bg: DisplayColor,
     bold: bool,
     dim: bool,
     italic: bool,
     underline: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayColor {
+    Default,
+    Indexed(u8),
+    Rgb(Rgb),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -731,10 +769,23 @@ fn collect_screen(
 
 impl StyledCell {
     fn blank(theme: Option<&Theme>) -> Self {
+        let preserve_terminal = theme_preserves_terminal_colors(theme);
         Self {
             text: " ".to_string(),
-            fg: theme.map_or(Rgb(255, 255, 255), Theme::default_fg_rgb),
-            bg: theme.map_or(Rgb(0, 0, 0), Theme::default_bg_rgb),
+            fg: if preserve_terminal {
+                DisplayColor::Default
+            } else {
+                theme.map_or(DisplayColor::Rgb(Rgb(255, 255, 255)), |theme| {
+                    DisplayColor::Rgb(theme.default_fg_rgb())
+                })
+            },
+            bg: if preserve_terminal {
+                DisplayColor::Default
+            } else {
+                theme.map_or(DisplayColor::Rgb(Rgb(0, 0, 0)), |theme| {
+                    DisplayColor::Rgb(theme.default_bg_rgb())
+                })
+            },
             bold: false,
             dim: false,
             italic: false,
@@ -745,21 +796,33 @@ impl StyledCell {
     }
 }
 
-fn display_vt_color(theme: Option<&Theme>, color: vt100::Color, foreground: bool) -> Rgb {
+fn theme_preserves_terminal_colors(theme: Option<&Theme>) -> bool {
+    theme.is_none_or(|theme| {
+        !theme.force_default
+            && theme.palette_map.is_empty()
+            && theme.background_palette_map.is_empty()
+            && theme.foreground.is_empty()
+            && theme.background.is_empty()
+    })
+}
+
+fn display_vt_color(theme: Option<&Theme>, color: vt100::Color, foreground: bool) -> DisplayColor {
     if let Some(theme) = theme {
-        return theme.map_vt_color(color, foreground);
+        if theme_preserves_terminal_colors(Some(theme)) {
+            return match color {
+                vt100::Color::Default => DisplayColor::Default,
+                vt100::Color::Idx(idx) => DisplayColor::Indexed(idx),
+                vt100::Color::Rgb(r, g, b) => DisplayColor::Rgb(Rgb(r, g, b)),
+            };
+        }
+
+        return DisplayColor::Rgb(theme.map_vt_color(color, foreground));
     }
 
     match color {
-        vt100::Color::Default => {
-            if foreground {
-                Rgb(255, 255, 255)
-            } else {
-                Rgb(0, 0, 0)
-            }
-        }
-        vt100::Color::Idx(idx) => indexed_color(idx),
-        vt100::Color::Rgb(r, g, b) => Rgb(r, g, b),
+        vt100::Color::Default => DisplayColor::Default,
+        vt100::Color::Idx(idx) => DisplayColor::Indexed(idx),
+        vt100::Color::Rgb(r, g, b) => DisplayColor::Rgb(Rgb(r, g, b)),
     }
 }
 
@@ -783,7 +846,7 @@ fn animate_styled_reveal(
                 if cell.wide_continuation {
                     continue;
                 }
-                let text = reveal_text_for_cell(cell, r, c, frame, ratio, effect);
+                let text = reveal_text_for_cell(cell, r, c, rows as usize, frame, ratio, effect);
                 write_cell(&mut out, cell, text, &mut style_state)?;
             }
             write!(out, "\x1b[0m")?;
@@ -815,6 +878,7 @@ fn reveal_text_for_cell(
     cell: &StyledCell,
     row: usize,
     col: usize,
+    total_rows: usize,
     frame: usize,
     ratio: f32,
     effect: EffectKind,
@@ -847,6 +911,16 @@ fn reveal_text_for_cell(
                 reveal_noise_symbol(row, col, frame)
             }
         }
+        EffectKind::Matrix => {
+            let state = matrix_cell_state(row, col, total_rows.max(1), ratio);
+            if state >= 1.0 {
+                &cell.text
+            } else if cell.text.trim().is_empty() || state < 0.0 {
+                " "
+            } else {
+                reveal_matrix_symbol(row, col, frame)
+            }
+        }
     }
 }
 
@@ -855,6 +929,36 @@ fn reveal_noise_symbol(row: usize, col: usize, frame: usize) -> &'static str {
     // can wobble in some terminals/fonts during full-screen redraw.
     const SYMBOLS: [&str; 8] = [".", ":", "+", "*", "#", "%", "@", "="];
     SYMBOLS[(row + col + frame) % SYMBOLS.len()]
+}
+
+fn reveal_matrix_symbol(row: usize, col: usize, frame: usize) -> &'static str {
+    const SYMBOLS: [&str; 8] = ["0", "1", "|", ":", ".", "+", "*", "#"];
+    SYMBOLS[(row * 19 + col * 11 + frame * 5) % SYMBOLS.len()]
+}
+
+fn pseudo_random_01(a: u64, b: u64) -> f32 {
+    let mut x = a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ b.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x % 10_000) as f32 / 10_000.0
+}
+
+fn matrix_cell_state(row: usize, col: usize, total_rows: usize, progress: f32) -> f32 {
+    let offset = pseudo_random_01(col as u64, 13) * 6.0;
+    let trail = 3.5 + pseudo_random_01(col as u64, 29) * 4.5;
+    let span = total_rows as f32 + trail + 6.0;
+    let head = progress.clamp(0.0, 1.0) * span - offset;
+    let distance = head - row as f32;
+    if distance < 0.0 {
+        -1.0
+    } else if distance <= trail {
+        0.0
+    } else {
+        1.0
+    }
 }
 
 fn diff_screen(
@@ -885,8 +989,9 @@ fn draw_live_screen(
     out: &mut io::Stdout,
     cells: &[Vec<StyledCell>],
     state: &TerminalState,
-    changed: &[Vec<bool>],
-    _theme: &Theme,
+    redraw: &[Vec<bool>],
+    highlight: &[Vec<bool>],
+    theme: &Theme,
     animation: LiveRenderFrame,
 ) -> io::Result<()> {
     match animation.scroll_hint {
@@ -896,7 +1001,7 @@ fn draw_live_screen(
     }
     let rows = cells.len();
     for r in 0..rows {
-        if !row_has_changes(changed, r) {
+        if !row_has_changes(redraw, r) {
             continue;
         }
 
@@ -910,13 +1015,17 @@ fn draw_live_screen(
             if cell.wide_continuation {
                 continue;
             }
-            if changed[r][c] && !cell.text.trim().is_empty() {
+            if highlight[r][c] && !cell.text.trim().is_empty() {
                 let mut highlighted = cell.clone();
-                highlighted.bold = true;
+                if !theme_preserves_terminal_colors(Some(theme)) {
+                    highlighted.bold = true;
+                    highlighted.fg = DisplayColor::Rgb(theme.default_fg_rgb());
+                }
                 let text = live_render_text_for_cell(
                     cell,
                     r,
                     c,
+                    cells.len(),
                     animation.frame,
                     animation.ratio,
                     animation.effect,
@@ -944,6 +1053,7 @@ fn live_render_text_for_cell(
     cell: &StyledCell,
     row: usize,
     col: usize,
+    total_rows: usize,
     frame: usize,
     ratio: f32,
     effect: EffectKind,
@@ -976,6 +1086,14 @@ fn live_render_text_for_cell(
                 cell.text.clone()
             } else {
                 reveal_noise_symbol(row, col, frame).to_string()
+            }
+        }
+        EffectKind::Matrix => {
+            let state = matrix_cell_state(row, col, total_rows.max(1), ratio);
+            if state >= 1.0 {
+                cell.text.clone()
+            } else {
+                reveal_matrix_symbol(row, col, frame).to_string()
             }
         }
     }
@@ -1081,16 +1199,9 @@ fn write_cell(
         underline: cell.underline,
     };
     if style_state.as_ref() != Some(&next_style) {
-        write!(
-            out,
-            "\x1b[0m\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m",
-            next_style.fg.0,
-            next_style.fg.1,
-            next_style.fg.2,
-            next_style.bg.0,
-            next_style.bg.1,
-            next_style.bg.2
-        )?;
+        write!(out, "\x1b[0m")?;
+        write_display_color(out, true, next_style.fg)?;
+        write_display_color(out, false, next_style.bg)?;
         if next_style.bold {
             write!(out, "\x1b[1m")?;
         }
@@ -1106,6 +1217,43 @@ fn write_cell(
         *style_state = Some(next_style);
     }
     write!(out, "{}", text)
+}
+
+fn write_display_color(out: &mut io::Stdout, fg: bool, color: DisplayColor) -> io::Result<()> {
+    match color {
+        DisplayColor::Default => {
+            if fg {
+                write!(out, "\x1b[39m")
+            } else {
+                write!(out, "\x1b[49m")
+            }
+        }
+        DisplayColor::Indexed(idx) => {
+            let code = if fg {
+                if idx < 8 {
+                    30 + idx
+                } else if idx < 16 {
+                    90 + (idx - 8)
+                } else {
+                    return write!(out, "\x1b[38;5;{}m", idx);
+                }
+            } else if idx < 8 {
+                40 + idx
+            } else if idx < 16 {
+                100 + (idx - 8)
+            } else {
+                return write!(out, "\x1b[48;5;{}m", idx);
+            };
+            write!(out, "\x1b[{}m", code)
+        }
+        DisplayColor::Rgb(rgb) => {
+            if fg {
+                write!(out, "\x1b[38;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
+            } else {
+                write!(out, "\x1b[48;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
+            }
+        }
+    }
 }
 
 fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
@@ -1140,6 +1288,21 @@ fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
                 })
                 .collect()
         }
+        EffectKind::Matrix => text
+            .chars()
+            .enumerate()
+            .map(|(idx, ch)| {
+                if ch.is_whitespace() {
+                    return ch;
+                }
+                let state = matrix_cell_state(0, idx, 1, ratio);
+                if state >= 1.0 {
+                    ch
+                } else {
+                    ['0', '1', '|', ':', '.', '+', '*', '#'][(idx + (ratio * 100.0) as usize) % 8]
+                }
+            })
+            .collect(),
     }
 }
 
@@ -1228,6 +1391,34 @@ mod tests {
     }
 
     #[test]
+    fn live_render_passthrough_detects_bracketed_paste_mode_sequences() {
+        let bytes = b"\x1b[?2004hhello\x1b[?2004l";
+
+        let mut found_enable = Vec::new();
+        for pattern in LIVE_RENDER_PASTE_MODE_ENABLE_SEQUENCES {
+            for _ in bytes
+                .windows(pattern.len())
+                .filter(|window| *window == *pattern)
+            {
+                found_enable.push(*pattern);
+            }
+        }
+
+        let mut found_disable = Vec::new();
+        for pattern in LIVE_RENDER_PASTE_MODE_DISABLE_SEQUENCES {
+            for _ in bytes
+                .windows(pattern.len())
+                .filter(|window| *window == *pattern)
+            {
+                found_disable.push(*pattern);
+            }
+        }
+
+        assert!(found_enable.contains(&b"\x1b[?2004h".as_slice()));
+        assert!(found_disable.contains(&b"\x1b[?2004l".as_slice()));
+    }
+
+    #[test]
     fn noise_suppression_input_matches_up_down_and_wheel_or_drag() {
         assert!(contains_noise_suppression_input(b"\x1b[A"));
         assert!(contains_noise_suppression_input(b"\x1b[B"));
@@ -1267,14 +1458,29 @@ mod tests {
             live_render_effect_ratios(EffectKind::Coalesce),
             &[0.12, 0.38, 0.72, 1.0]
         );
+        assert_eq!(
+            live_render_effect_ratios(EffectKind::Matrix),
+            &[0.08, 0.24, 0.45, 0.72, 1.0]
+        );
     }
 
     #[test]
     fn live_render_coalesce_uses_noise_before_settling() {
         let cell = cell_with("X", &StyledCell::blank(None));
 
-        let early = live_render_text_for_cell(&cell, 0, 0, 0, 0.12, EffectKind::Coalesce);
-        let late = live_render_text_for_cell(&cell, 0, 0, 3, 1.0, EffectKind::Coalesce);
+        let early = live_render_text_for_cell(&cell, 0, 0, 1, 0, 0.12, EffectKind::Coalesce);
+        let late = live_render_text_for_cell(&cell, 0, 0, 1, 3, 1.0, EffectKind::Coalesce);
+
+        assert_ne!(early, " ");
+        assert_eq!(late, "X");
+    }
+
+    #[test]
+    fn live_render_matrix_uses_noise_before_settling() {
+        let cell = cell_with("X", &StyledCell::blank(None));
+
+        let early = live_render_text_for_cell(&cell, 0, 0, 1, 0, 0.08, EffectKind::Matrix);
+        let late = live_render_text_for_cell(&cell, 0, 0, 1, 4, 1.0, EffectKind::Matrix);
 
         assert_ne!(early, " ");
         assert_eq!(late, "X");
@@ -1291,6 +1497,64 @@ mod tests {
         let changed = full_screen_changed(&cells);
 
         assert_eq!(changed, vec![vec![true, true], vec![true]]);
+    }
+
+    #[test]
+    fn no_screen_changed_marks_every_cell_clean() {
+        let blank = StyledCell::blank(None);
+        let cells = vec![
+            vec![cell_with("a", &blank), cell_with("b", &blank)],
+            vec![cell_with("c", &blank)],
+        ];
+
+        let changed = no_screen_changed(&cells);
+
+        assert_eq!(changed, vec![vec![false, false], vec![false]]);
+    }
+
+    #[test]
+    fn default_theme_preserves_terminal_default_and_indexed_colors() {
+        let theme = crate::theme::builtin_theme("default");
+
+        assert_eq!(
+            display_vt_color(Some(&theme), vt100::Color::Default, true),
+            DisplayColor::Default
+        );
+        assert_eq!(
+            display_vt_color(Some(&theme), vt100::Color::Idx(6), true),
+            DisplayColor::Indexed(6)
+        );
+    }
+
+    #[test]
+    fn themed_palette_maps_to_rgb_for_live_render() {
+        let theme = crate::theme::builtin_theme("matrix-green");
+
+        assert_eq!(
+            display_vt_color(Some(&theme), vt100::Color::Default, false),
+            DisplayColor::Rgb(theme.default_bg_rgb())
+        );
+        assert!(matches!(
+            display_vt_color(Some(&theme), vt100::Color::Idx(2), true),
+            DisplayColor::Rgb(_)
+        ));
+    }
+
+    #[test]
+    fn default_theme_live_render_highlight_keeps_original_cell_color() {
+        let theme = crate::theme::builtin_theme("default");
+        let mut cell = StyledCell::blank(Some(&theme));
+        cell.text = "X".to_string();
+        cell.fg = DisplayColor::Indexed(6);
+
+        let mut highlighted = cell.clone();
+        if !theme_preserves_terminal_colors(Some(&theme)) {
+            highlighted.bold = true;
+            highlighted.fg = DisplayColor::Rgb(theme.default_fg_rgb());
+        }
+
+        assert_eq!(highlighted.fg, DisplayColor::Indexed(6));
+        assert!(!highlighted.bold);
     }
 
     #[test]
