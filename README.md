@@ -1,6 +1,5 @@
-[![CI](https://github.com/blacknon/baeru/actions/workflows/ci.yml/badge.svg)](https://github.com/blacknon/baeru/actions/workflows/ci.yml)
-
-# baeru
+baeru
+===
 
 `baeru` is a Rust wrapper for existing terminal applications and command output.
 It adds animation, color transformation, and command-specific input behavior without patching the target application itself.
