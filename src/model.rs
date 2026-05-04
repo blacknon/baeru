@@ -84,6 +84,12 @@ pub(crate) struct Cli {
     #[arg(long, default_value_t = 24)]
     pub(crate) frames: usize,
 
+    #[arg(long, default_value_t = 90)]
+    pub(crate) live_render_duration_ms: u64,
+
+    #[arg(long, default_value_t = 180)]
+    pub(crate) live_render_mouse_quiet_ms: u64,
+
     #[arg(long, default_value_t = 200)]
     pub(crate) max_lines: usize,
 
@@ -125,6 +131,8 @@ pub(crate) struct Profile {
     pub(crate) capture_ms: Option<u64>,
     pub(crate) duration_ms: Option<u64>,
     pub(crate) frames: Option<usize>,
+    pub(crate) live_render_duration_ms: Option<u64>,
+    pub(crate) live_render_mouse_quiet_ms: Option<u64>,
     pub(crate) max_lines: Option<usize>,
     pub(crate) max_bytes: Option<usize>,
     pub(crate) animate_over_limit: Option<bool>,
@@ -186,6 +194,8 @@ pub(crate) struct Runtime {
     pub(crate) capture_ms: u64,
     pub(crate) duration_ms: u64,
     pub(crate) frames: usize,
+    pub(crate) live_render_duration_ms: u64,
+    pub(crate) live_render_mouse_quiet_ms: u64,
     pub(crate) max_lines: usize,
     pub(crate) max_bytes: usize,
     pub(crate) animate_over_limit: bool,

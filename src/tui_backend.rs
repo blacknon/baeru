@@ -72,9 +72,10 @@ fn run_splash(rt: Runtime) -> Result<()> {
 }
 
 fn run_live_render(rt: Runtime) -> Result<()> {
-    let (cols, rows) = size().unwrap_or((80, 24));
+    let (mut cols, mut rows) = size().unwrap_or((80, 24));
     let mut session = PtySession::spawn(&rt.command, rows, cols)?;
     let _guard = TerminalGuard::enter(true)?;
+    let mouse_quiet_window = Duration::from_millis(rt.live_render_mouse_quiet_ms);
 
     let writer = Arc::new(Mutex::new(session.writer));
     let mouse_activity = Arc::new(Mutex::new(None));
@@ -100,6 +101,19 @@ fn run_live_render(rt: Runtime) -> Result<()> {
         match session.reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                if let Ok((new_cols, new_rows)) = size() {
+                    if new_cols != cols || new_rows != rows {
+                        cols = new_cols;
+                        rows = new_rows;
+                        parser = vt100::Parser::new(rows, cols, 0);
+                        prev = None;
+                        execute!(
+                            stdout,
+                            Clear(ClearType::All),
+                            crossterm::cursor::MoveTo(0, 0)
+                        )?;
+                    }
+                }
                 mouse_reporting_active = forward_live_passthrough_sequences(
                     &mut stdout,
                     &buf[..n],
@@ -121,7 +135,8 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                     &rt.theme,
                     LiveRenderFrame {
                         scroll_hint,
-                        effect: if mouse_reporting_active && mouse_activity_recent(&mouse_activity)
+                        effect: if mouse_reporting_active
+                            && mouse_activity_recent(&mouse_activity, mouse_quiet_window)
                         {
                             EffectKind::Plain
                         } else {
@@ -130,7 +145,7 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                         frame,
                         ratio: 1.0,
                     },
-                    rt.duration_ms,
+                    rt.live_render_duration_ms,
                 )?;
                 prev = Some(current);
                 frame = frame.wrapping_add(1);
@@ -448,7 +463,6 @@ struct TerminalGuard {
 }
 
 const KEYMAP_PENDING_TIMEOUT: Duration = Duration::from_millis(35);
-const MOUSE_ACTIVITY_WINDOW: Duration = Duration::from_millis(180);
 
 fn spawn_input_forwarder(
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -542,12 +556,15 @@ fn contains_mouse_scroll_or_drag(bytes: &[u8]) -> bool {
     })
 }
 
-fn mouse_activity_recent(mouse_activity: &Arc<Mutex<Option<Instant>>>) -> bool {
+fn mouse_activity_recent(
+    mouse_activity: &Arc<Mutex<Option<Instant>>>,
+    quiet_window: Duration,
+) -> bool {
     mouse_activity
         .lock()
         .unwrap()
         .as_ref()
-        .is_some_and(|instant| instant.elapsed() <= MOUSE_ACTIVITY_WINDOW)
+        .is_some_and(|instant| instant.elapsed() <= quiet_window)
 }
 
 struct ResizeWatcher {

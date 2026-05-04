@@ -71,6 +71,12 @@ fn build_runtime_with_env(
     let capture_ms = profile.capture_ms.unwrap_or(cli.capture_ms);
     let duration_ms = profile.duration_ms.unwrap_or(cli.duration_ms);
     let frames = profile.frames.unwrap_or(cli.frames).max(1);
+    let live_render_duration_ms = profile
+        .live_render_duration_ms
+        .unwrap_or(cli.live_render_duration_ms);
+    let live_render_mouse_quiet_ms = profile
+        .live_render_mouse_quiet_ms
+        .unwrap_or(cli.live_render_mouse_quiet_ms);
 
     let palette = profile.palette.unwrap_or(cli.palette);
     let needs_theme = (backend == Backend::Tui
@@ -125,6 +131,8 @@ fn build_runtime_with_env(
         capture_ms,
         duration_ms,
         frames,
+        live_render_duration_ms,
+        live_render_mouse_quiet_ms,
         max_lines,
         max_bytes,
         animate_over_limit,
@@ -442,6 +450,8 @@ profiles:
                 capture_ms: 360,
                 duration_ms: 720,
                 frames: 24,
+                live_render_duration_ms: 90,
+                live_render_mouse_quiet_ms: 180,
                 max_lines: 200,
                 max_bytes: 1_000_000,
                 animate_over_limit: false,
@@ -491,6 +501,8 @@ profiles:
                 capture_ms: 360,
                 duration_ms: 720,
                 frames: 24,
+                live_render_duration_ms: 90,
+                live_render_mouse_quiet_ms: 180,
                 max_lines: 200,
                 max_bytes: 1_000_000,
                 animate_over_limit: false,
