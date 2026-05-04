@@ -466,20 +466,26 @@ fn animate_styled_reveal(
                 let text = reveal_text_for_cell(cell, r, c, frame, ratio, effect);
                 write_cell(&mut out, cell, text, &mut style_state)?;
             }
-            write!(out, "\x1b[0m\r\n")?;
+            write!(out, "\x1b[0m")?;
+            if r + 1 < rows as usize {
+                write!(out, "\r\n")?;
+            }
         }
         out.flush()?;
         sleep_frame(duration_ms, frames);
     }
     execute!(out, crossterm::cursor::MoveTo(0, 0))?;
-    for row in cells {
+    for (r, row) in cells.iter().enumerate() {
         let mut style_state = None;
         for cell in row {
             if !cell.wide_continuation {
                 write_cell(&mut out, cell, &cell.text, &mut style_state)?;
             }
         }
-        write!(out, "\x1b[0m\r\n")?;
+        write!(out, "\x1b[0m")?;
+        if r + 1 < rows as usize {
+            write!(out, "\r\n")?;
+        }
     }
     out.flush()?;
     Ok(())
@@ -583,7 +589,10 @@ fn draw_live_screen(
                 write_cell(out, cell, &cell.text, &mut style_state)?;
             }
         }
-        write!(out, "\x1b[0m\r\n")?;
+        write!(out, "\x1b[0m")?;
+        if r + 1 < rows {
+            write!(out, "\r\n")?;
+        }
     }
     out.flush()
 }

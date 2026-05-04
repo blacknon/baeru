@@ -419,10 +419,10 @@ MIT. See [LICENSE](LICENSE).
 
 ## ASW-G-01?
 
-> **?** "ギャラルホルンの真理は此処だ。皆！…バエルの元へ集え！」"
+> **?** "Here stands the truth of Gjallarhorn. All of you... gather beneath Bael!"
 >
-> **?** "バエルだ！"
+> **?** "It's Bael!"
 >
-> **?** "アグニカ・カイエルの魂！"
+> **?** "The soul of Agnika Kaieru!"
 >
-> **?** "それは違うバエルだよ"
+> **?** "That's the other Bael, it is Baeru"

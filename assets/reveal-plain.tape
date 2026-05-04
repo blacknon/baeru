@@ -14,6 +14,6 @@ Set TypingSpeed 0ms
 
 Type "./target/debug/baeru --mode reveal --effect plain -- htop"
 Enter
-Sleep 4500ms
+Sleep 6500ms
 Type "q"
 Sleep 2s
