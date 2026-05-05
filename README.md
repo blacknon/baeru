@@ -231,10 +231,8 @@ Rewrites key input per command using YAML-defined mapping rules.
 
 Animates CLI output inline below the prompt.
 
-<!-- TODO: 日本語から英語にちゃんと書き換えて -->
-
-- theme / CLI color overrideなし: 元の ANSI 色を保持したままアニメーション
-- themeあり、または CLI 色指定あり: `baeru` 側で再着色
+- Without a theme or CLI color override: animates while preserving the original ANSI colors
+- With a theme or CLI color override: recolors output on the `baeru` side
 
 Supported effects:
 
