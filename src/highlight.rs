@@ -182,7 +182,9 @@ fn run_trigger_command(
 fn ensure_output_dir(specified: Option<&Path>) -> Result<PathBuf> {
     let dir = match specified {
         Some(path) => path.to_path_buf(),
-        None => std::env::current_dir()?.join("baeru-artifacts"),
+        None => std::env::current_dir()?
+            .join("tmp")
+            .join("baeru-artifacts"),
     };
     fs::create_dir_all(&dir)?;
     Ok(dir)
