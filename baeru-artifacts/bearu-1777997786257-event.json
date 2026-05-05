@@ -1,0 +1,11 @@
+{
+  "backend": "tui",
+  "key": "bearu",
+  "pattern": "bearu",
+  "matches": [
+    "bearu",
+    "bearu"
+  ],
+  "capture_kind": null,
+  "capture_path": null
+}

@@ -252,6 +252,7 @@ CLI option:
 
 ```bash
 baeru --backend cli -e '(?i)error' -e 'timeout' -- journalctl -n 50
+baeru --backend cli -e '(?i)error' --highlight-capture-cli-text --highlight-command echo --highlight-command matched -- journalctl -n 50
 ```
 
 - `-e`, `--highlight`
@@ -259,6 +260,15 @@ baeru --backend cli -e '(?i)error' -e 'timeout' -- journalctl -n 50
 - `--highlight-color`
   - default background color for CLI `-e` rules
   - default is yellow: `#ffff00`
+- `--highlight-command`
+  - command argv for CLI-defined highlight rules
+  - repeat the option for each argv part
+- `--highlight-capture-cli-text`
+  - save full CLI text output when a CLI-defined highlight matches
+- `--highlight-capture-tui-screenshot`
+  - save a TUI SVG screenshot when a CLI-defined highlight matches
+- `--highlight-output-dir`
+  - output directory for CLI-defined highlight captures and manifests
 
 Config example:
 

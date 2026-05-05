@@ -156,6 +156,10 @@ fn build_runtime_with_env(
     .context("invalid highlight_color")?;
     let highlight_rules = compile_highlight_rules(
         &highlight.highlight,
+        &highlight.highlight_command,
+        highlight.highlight_capture_tui_screenshot,
+        highlight.highlight_capture_cli_text,
+        highlight.highlight_output_dir.as_deref(),
         &profile.highlight_rules,
         highlight_default_color,
     )
@@ -202,6 +206,10 @@ fn parse_highlight_color(value: Option<&str>) -> Result<Rgb> {
 
 fn compile_highlight_rules(
     cli_patterns: &[String],
+    cli_command: &[String],
+    cli_capture_tui_screenshot: bool,
+    cli_capture_cli_text: bool,
+    cli_output_dir: Option<&Path>,
     profile_rules: &[HighlightRuleConfig],
     default_color: Rgb,
 ) -> Result<Vec<HighlightRule>> {
@@ -213,10 +221,15 @@ fn compile_highlight_rules(
             regex: Regex::new(pattern)
                 .with_context(|| format!("invalid highlight regex: {pattern}"))?,
             color: default_color,
-            command: None,
-            capture_tui_screenshot: false,
-            capture_cli_text: false,
-            output_dir: None,
+            command: (!cli_command.is_empty()).then(|| {
+                cli_command
+                    .iter()
+                    .map(|part| OsString::from(part.as_str()))
+                    .collect::<Vec<_>>()
+            }),
+            capture_tui_screenshot: cli_capture_tui_screenshot,
+            capture_cli_text: cli_capture_cli_text,
+            output_dir: cli_output_dir.map(Path::to_path_buf),
         });
     }
     for rule in profile_rules {
@@ -454,7 +467,7 @@ mod tests {
     };
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -709,6 +722,10 @@ profiles:
                 highlight: HighlightArgs {
                     highlight: vec![],
                     highlight_color: None,
+                    highlight_command: vec![],
+                    highlight_capture_cli_text: false,
+                    highlight_capture_tui_screenshot: false,
+                    highlight_output_dir: None,
                 },
                 transform: TransformArgs {
                     replace: vec![],
@@ -781,6 +798,10 @@ profiles:
                 highlight: HighlightArgs {
                     highlight: vec![],
                     highlight_color: None,
+                    highlight_command: vec![],
+                    highlight_capture_cli_text: false,
+                    highlight_capture_tui_screenshot: false,
+                    highlight_output_dir: None,
                 },
                 transform: TransformArgs {
                     replace: vec![],
@@ -798,6 +819,72 @@ profiles:
 
         assert!(runtime.features.contains(&Feature::Reveal));
         assert!(!runtime.features.contains(&Feature::LiveColor));
+    }
+
+    #[test]
+    fn build_runtime_with_env_applies_cli_highlight_actions() {
+        let runtime = build_runtime_with_env(
+            Cli {
+                selection: SelectionArgs {
+                    backend: Some(Backend::Cli),
+                    mode: None,
+                    effect: None,
+                },
+                files: FileArgs {
+                    config_file: None,
+                    theme_file: None,
+                    palette: "default".to_string(),
+                    keymap_file: None,
+                },
+                animation: AnimationArgs {
+                    capture_ms: 360,
+                    duration_ms: 720,
+                    frames: 24,
+                    live_render_duration_ms: 90,
+                    live_render_mouse_quiet_ms: 180,
+                    animation_color_fade: false,
+                    animation_color_darken_factor: 0.25,
+                    no_theme_after_reveal: false,
+                },
+                cli_render: CliRenderArgs {
+                    max_lines: 200,
+                    max_bytes: 1_000_000,
+                    animate_over_limit: false,
+                },
+                highlight: HighlightArgs {
+                    highlight: vec!["error".to_string()],
+                    highlight_color: Some("#ffcc00".to_string()),
+                    highlight_command: vec!["echo".to_string(), "matched".to_string()],
+                    highlight_capture_cli_text: true,
+                    highlight_capture_tui_screenshot: true,
+                    highlight_output_dir: Some(PathBuf::from("./captures")),
+                },
+                transform: TransformArgs {
+                    replace: vec![],
+                    mask: vec![],
+                    mask_char: "*".to_string(),
+                },
+                command: vec![OsString::from("journalctl")],
+            },
+            true,
+            true,
+            false,
+            false,
+        )
+        .expect("runtime should build");
+
+        let rule = runtime
+            .highlight_rules
+            .first()
+            .expect("cli highlight rule should exist");
+        assert_eq!(
+            rule.command.as_ref().expect("command should exist").len(),
+            2
+        );
+        assert!(rule.capture_cli_text);
+        assert!(rule.capture_tui_screenshot);
+        assert_eq!(rule.output_dir.as_deref(), Some(Path::new("./captures")));
+        assert_eq!(rule.color, Rgb(0xff, 0xcc, 0x00));
     }
 
     #[test]

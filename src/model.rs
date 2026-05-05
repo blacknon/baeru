@@ -139,6 +139,18 @@ pub(crate) struct HighlightArgs {
 
     #[arg(short = 'H', long)]
     pub(crate) highlight_color: Option<String>,
+
+    #[arg(long = "highlight-command")]
+    pub(crate) highlight_command: Vec<String>,
+
+    #[arg(long, default_value_t = false)]
+    pub(crate) highlight_capture_cli_text: bool,
+
+    #[arg(long, default_value_t = false)]
+    pub(crate) highlight_capture_tui_screenshot: bool,
+
+    #[arg(long = "highlight-output-dir")]
+    pub(crate) highlight_output_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
