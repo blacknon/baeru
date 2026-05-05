@@ -8,7 +8,7 @@ use crate::{
         LIVE_RENDER_RESET_SEQUENCES,
     },
     support::{exit_with_status, sleep_frame, spawn_direct},
-    theme::SgrRewriter,
+    theme::{darken, lerp, SgrRewriter},
 };
 use anyhow::{anyhow, Result};
 use crossterm::{
@@ -21,7 +21,10 @@ use crossterm::{
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 #[cfg(unix)]
-use signal_hook::{consts::signal::SIGWINCH, iterator::Signals};
+use signal_hook::{
+    consts::signal::{SIGINT, SIGQUIT, SIGTERM, SIGWINCH},
+    iterator::Signals,
+};
 use std::{
     collections::HashMap,
     ffi::OsString,
@@ -75,9 +78,72 @@ fn run_splash(rt: Runtime) -> Result<()> {
 fn run_live_render(rt: Runtime) -> Result<()> {
     let (mut cols, mut rows) = size().unwrap_or((80, 24));
     let mut session = PtySession::spawn(&rt.command, rows, cols)?;
-    let _guard = TerminalGuard::enter(true)?;
-    let mouse_quiet_window = Duration::from_millis(rt.live_render_mouse_quiet_ms);
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let mut buf = [0u8; 8192];
+    let deadline = Instant::now() + Duration::from_millis(rt.capture_ms);
+    let mut captured = Vec::new();
+    while Instant::now() < deadline {
+        match session.reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                parser.process(&buf[..n]);
+                captured.extend_from_slice(&buf[..n]);
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
 
+    let emulate_alt_screen = contains_alt_screen_enter_sequence(&captured);
+    let initial_screen = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
+    let initial_state = collect_terminal_state(parser.screen(), rows, cols);
+
+    let _guard = TerminalGuard::enter(true)?;
+    let mut stdout = io::stdout();
+    if emulate_alt_screen {
+        execute!(stdout, EnterAlternateScreen)?;
+    }
+    let _signal_cleanup = SignalCleanupWatcher::spawn(SignalCleanupConfig {
+        leave_alt_screen: true,
+        reset_live_sequences: true,
+    });
+    animate_styled_reveal_in_place(
+        &initial_screen,
+        rows,
+        cols,
+        RevealTuning {
+            frames: rt.frames,
+            duration_ms: rt.duration_ms,
+            effect: rt.effect,
+            color_fade: rt.animation_color_fade,
+            darken_factor: rt.animation_color_darken_factor,
+        },
+    )?;
+    let mut passthrough = LivePassthrough::default();
+    passthrough.feed(&mut stdout, &captured)?;
+    draw_live_screen(
+        &mut stdout,
+        &initial_screen,
+        &initial_state,
+        RedrawMasks {
+            redraw: &full_screen_changed(&initial_screen),
+            highlight: &no_screen_changed(&initial_screen),
+        },
+        &rt.theme,
+        LiveRenderTuning {
+            duration_ms: rt.live_render_duration_ms,
+            color_fade: rt.animation_color_fade,
+            darken_factor: rt.animation_color_darken_factor,
+        },
+        LiveRenderFrame {
+            scroll_hint: None,
+            effect: EffectKind::Plain,
+            frame: 0,
+            ratio: 1.0,
+        },
+    )?;
+
+    let mouse_quiet_window = Duration::from_millis(rt.live_render_mouse_quiet_ms);
     let writer = Arc::new(Mutex::new(session.writer));
     let mouse_activity = Arc::new(Mutex::new(None));
     let _input_handle = spawn_input_forwarder(
@@ -86,17 +152,8 @@ fn run_live_render(rt: Runtime) -> Result<()> {
         Some(mouse_activity.clone()),
     );
 
-    let mut parser = vt100::Parser::new(rows, cols, 0);
-    let mut prev: Option<Vec<Vec<StyledCell>>> = None;
+    let mut prev: Option<Vec<Vec<StyledCell>>> = Some(initial_screen);
     let mut frame = 0usize;
-    let mut mouse_reporting_active = false;
-    let mut buf = [0u8; 8192];
-    let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        Clear(ClearType::All),
-        crossterm::cursor::MoveTo(0, 0)
-    )?;
 
     loop {
         match session.reader.read(&mut buf) {
@@ -115,11 +172,7 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                         )?;
                     }
                 }
-                mouse_reporting_active = forward_live_passthrough_sequences(
-                    &mut stdout,
-                    &buf[..n],
-                    mouse_reporting_active,
-                )?;
+                passthrough.feed(&mut stdout, &buf[..n])?;
                 parser.process(&buf[..n]);
                 let current = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
                 let state = collect_terminal_state(parser.screen(), rows, cols);
@@ -136,7 +189,7 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                     &rt.theme,
                     LiveRenderFrame {
                         scroll_hint,
-                        effect: if mouse_reporting_active
+                        effect: if passthrough.mouse_reporting_active
                             && mouse_activity_recent(&mouse_activity, mouse_quiet_window)
                         {
                             EffectKind::Plain
@@ -146,7 +199,11 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                         frame,
                         ratio: 1.0,
                     },
-                    rt.live_render_duration_ms,
+                    LiveRenderTuning {
+                        duration_ms: rt.live_render_duration_ms,
+                        color_fade: rt.animation_color_fade,
+                        darken_factor: rt.animation_color_darken_factor,
+                    },
                 )?;
                 prev = Some(current);
                 frame = frame.wrapping_add(1);
@@ -168,11 +225,10 @@ fn animate_live_render_update(
     changed: &[Vec<bool>],
     theme: &Theme,
     base_frame: LiveRenderFrame,
-    duration_ms: u64,
+    tuning: LiveRenderTuning,
 ) -> io::Result<()> {
     let ratios = live_render_effect_ratios(base_frame.effect);
-    let total_ms = duration_ms.clamp(45, 120);
-    let per_frame_ms = (total_ms / ratios.len().max(1) as u64).max(1);
+    let per_frame_ms = live_render_per_frame_ms(tuning.duration_ms, base_frame.effect);
     let full_redraw = full_screen_changed(cells);
     let no_highlight = no_screen_changed(cells);
 
@@ -191,9 +247,12 @@ fn animate_live_render_update(
             out,
             cells,
             state,
-            redraw_mask,
-            highlight_mask,
+            RedrawMasks {
+                redraw: redraw_mask,
+                highlight: highlight_mask,
+            },
             theme,
+            tuning,
             LiveRenderFrame {
                 scroll_hint: if idx == 0 {
                     base_frame.scroll_hint
@@ -217,10 +276,18 @@ fn live_render_effect_ratios(effect: EffectKind) -> &'static [f32] {
     match effect {
         EffectKind::Plain => &[1.0],
         EffectKind::Fade => &[0.35, 1.0],
+        EffectKind::Wipe => &[0.2, 0.55, 1.0],
         EffectKind::Sweep => &[0.25, 0.65, 1.0],
         EffectKind::Coalesce => &[0.12, 0.38, 0.72, 1.0],
+        EffectKind::Glitch => &[0.08, 0.16, 0.32, 0.55, 1.0],
         EffectKind::Matrix => &[0.08, 0.24, 0.45, 0.72, 1.0],
+        EffectKind::Scanline => &[0.12, 0.35, 0.68, 1.0],
     }
+}
+
+fn live_render_per_frame_ms(total_ms: u64, effect: EffectKind) -> u64 {
+    let ratios = live_render_effect_ratios(effect);
+    (total_ms.max(1) / ratios.len().max(1) as u64).max(1)
 }
 
 fn full_screen_changed(cells: &[Vec<StyledCell>]) -> Vec<Vec<bool>> {
@@ -261,7 +328,18 @@ fn run_reveal(rt: Runtime) -> Result<()> {
         Some(rt.theme.clone())
     };
     let screen = collect_screen(parser.screen(), rows, cols, theme.as_ref());
-    animate_styled_reveal(&screen, rows, cols, rt.frames, rt.duration_ms, rt.effect)?;
+    animate_styled_reveal(
+        &screen,
+        rows,
+        cols,
+        RevealTuning {
+            frames: rt.frames,
+            duration_ms: rt.duration_ms,
+            effect: rt.effect,
+            color_fade: rt.animation_color_fade,
+            darken_factor: rt.animation_color_darken_factor,
+        },
+    )?;
 
     let keymap = if rt.features.contains(&Feature::Keymap) {
         rt.keymap.clone()
@@ -290,6 +368,15 @@ fn run_pty_passthrough(
     let (cols, rows) = size().unwrap_or((80, 24));
     let session = PtySession::spawn(&rt.command, rows, cols)?;
     continue_passthrough(session, theme, keymap, None, false)
+}
+
+#[derive(Clone, Copy)]
+struct RevealTuning {
+    frames: usize,
+    duration_ms: u64,
+    effect: EffectKind,
+    color_fade: bool,
+    darken_factor: f32,
 }
 
 struct PtySession {
@@ -342,6 +429,10 @@ fn continue_passthrough(
 ) -> Result<()> {
     let use_raw = io::stdin().is_terminal() && io::stdout().is_terminal();
     let _guard = TerminalGuard::enter(use_raw)?;
+    let _signal_cleanup = SignalCleanupWatcher::spawn(SignalCleanupConfig {
+        leave_alt_screen: true,
+        reset_live_sequences: false,
+    });
     let writer = Arc::new(Mutex::new(session.writer));
     let _input_handle = spawn_input_forwarder(writer.clone(), keymap, None);
 
@@ -389,72 +480,94 @@ fn contains_alt_screen_enter_sequence(bytes: &[u8]) -> bool {
     })
 }
 
-fn forward_live_passthrough_sequences(
-    out: &mut io::Stdout,
-    bytes: &[u8],
-    mut mouse_reporting_active: bool,
-) -> io::Result<bool> {
-    let mut wrote_any = false;
+#[derive(Default)]
+struct LivePassthrough {
+    pending: Vec<u8>,
+    mouse_reporting_active: bool,
+}
+
+impl LivePassthrough {
+    fn feed<W: Write>(&mut self, out: &mut W, bytes: &[u8]) -> io::Result<()> {
+        self.pending.extend_from_slice(bytes);
+        let keep = longest_live_passthrough_suffix(&self.pending);
+        let split_at = self.pending.len().saturating_sub(keep);
+        let scan = self.pending[..split_at].to_vec();
+        self.pending = self.pending[split_at..].to_vec();
+
+        let mut wrote_any = false;
+        let mut i = 0;
+        while i < scan.len() {
+            if let Some((pattern, mouse_state)) = live_passthrough_match(&scan[i..]) {
+                out.write_all(pattern)?;
+                wrote_any = true;
+                if let Some(state) = mouse_state {
+                    self.mouse_reporting_active = state;
+                }
+                i += pattern.len();
+            } else {
+                i += 1;
+            }
+        }
+
+        if wrote_any {
+            out.flush()?;
+        }
+        Ok(())
+    }
+}
+
+fn live_passthrough_match(bytes: &[u8]) -> Option<(&'static [u8], Option<bool>)> {
     for pattern in LIVE_RENDER_MOUSE_ENABLE_SEQUENCES {
-        for _ in bytes
-            .windows(pattern.len())
-            .filter(|window| *window == *pattern)
-        {
-            out.write_all(pattern)?;
-            wrote_any = true;
-            mouse_reporting_active = true;
+        if bytes.starts_with(pattern) {
+            return Some((pattern, Some(true)));
         }
     }
     for pattern in LIVE_RENDER_MOUSE_DISABLE_SEQUENCES {
-        for _ in bytes
-            .windows(pattern.len())
-            .filter(|window| *window == *pattern)
-        {
-            out.write_all(pattern)?;
-            wrote_any = true;
-            mouse_reporting_active = false;
+        if bytes.starts_with(pattern) {
+            return Some((pattern, Some(false)));
         }
     }
     for pattern in LIVE_RENDER_INPUT_MODE_ENABLE_SEQUENCES {
-        for _ in bytes
-            .windows(pattern.len())
-            .filter(|window| *window == *pattern)
-        {
-            out.write_all(pattern)?;
-            wrote_any = true;
+        if bytes.starts_with(pattern) {
+            return Some((pattern, None));
         }
     }
     for pattern in LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES {
-        for _ in bytes
-            .windows(pattern.len())
-            .filter(|window| *window == *pattern)
-        {
-            out.write_all(pattern)?;
-            wrote_any = true;
+        if bytes.starts_with(pattern) {
+            return Some((pattern, None));
         }
     }
     for pattern in LIVE_RENDER_PASTE_MODE_ENABLE_SEQUENCES {
-        for _ in bytes
-            .windows(pattern.len())
-            .filter(|window| *window == *pattern)
-        {
-            out.write_all(pattern)?;
-            wrote_any = true;
+        if bytes.starts_with(pattern) {
+            return Some((pattern, None));
         }
     }
     for pattern in LIVE_RENDER_PASTE_MODE_DISABLE_SEQUENCES {
-        for _ in bytes
-            .windows(pattern.len())
-            .filter(|window| *window == *pattern)
-        {
-            out.write_all(pattern)?;
-            wrote_any = true;
+        if bytes.starts_with(pattern) {
+            return Some((pattern, None));
         }
     }
-    if wrote_any {
-        out.flush()?;
+    None
+}
+
+fn longest_live_passthrough_suffix(bytes: &[u8]) -> usize {
+    let patterns = LIVE_RENDER_MOUSE_ENABLE_SEQUENCES
+        .iter()
+        .chain(LIVE_RENDER_MOUSE_DISABLE_SEQUENCES.iter())
+        .chain(LIVE_RENDER_INPUT_MODE_ENABLE_SEQUENCES.iter())
+        .chain(LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES.iter())
+        .chain(LIVE_RENDER_PASTE_MODE_ENABLE_SEQUENCES.iter())
+        .chain(LIVE_RENDER_PASTE_MODE_DISABLE_SEQUENCES.iter());
+
+    let max_len = patterns.clone().map(|p| p.len()).max().unwrap_or(0);
+    let max_suffix = bytes.len().min(max_len.saturating_sub(1));
+    for len in (1..=max_suffix).rev() {
+        let suffix = &bytes[bytes.len() - len..];
+        if patterns.clone().any(|pattern| pattern.starts_with(suffix)) {
+            return len;
+        }
     }
-    Ok(mouse_reporting_active)
+    0
 }
 
 fn reset_live_passthrough_sequences(out: &mut io::Stdout) -> io::Result<()> {
@@ -604,6 +717,18 @@ struct ResizeWatcher {
     join: Option<thread::JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy)]
+struct SignalCleanupConfig {
+    leave_alt_screen: bool,
+    reset_live_sequences: bool,
+}
+
+struct SignalCleanupWatcher {
+    #[cfg(unix)]
+    handle: signal_hook::iterator::Handle,
+    join: Option<thread::JoinHandle<()>>,
+}
+
 impl ResizeWatcher {
     fn spawn(pty: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>) -> Self {
         #[cfg(unix)]
@@ -636,7 +761,51 @@ impl ResizeWatcher {
     }
 }
 
+impl SignalCleanupWatcher {
+    fn spawn(config: SignalCleanupConfig) -> Self {
+        #[cfg(unix)]
+        {
+            let mut signals =
+                Signals::new([SIGINT, SIGTERM, SIGQUIT]).expect("failed to register exit signals");
+            let handle = signals.handle();
+            let join = thread::spawn(move || {
+                if signals.forever().next().is_some() {
+                    let mut stdout = io::stdout();
+                    if config.reset_live_sequences {
+                        let _ = reset_live_passthrough_sequences(&mut stdout);
+                    }
+                    if config.leave_alt_screen {
+                        let _ = execute!(stdout, LeaveAlternateScreen);
+                    }
+                    crate::support::restore_terminal_state();
+                    std::process::exit(130);
+                }
+            });
+            Self {
+                handle,
+                join: Some(join),
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = config;
+            Self { join: None }
+        }
+    }
+}
+
 impl Drop for ResizeWatcher {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        self.handle.close();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+impl Drop for SignalCleanupWatcher {
     fn drop(&mut self) {
         #[cfg(unix)]
         self.handle.close();
@@ -719,6 +888,30 @@ struct LiveRenderFrame {
     effect: EffectKind,
     frame: usize,
     ratio: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LiveRenderTuning {
+    duration_ms: u64,
+    color_fade: bool,
+    darken_factor: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RedrawMasks<'a> {
+    redraw: &'a [Vec<bool>],
+    highlight: &'a [Vec<bool>],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CellAnimCtx {
+    row: usize,
+    col: usize,
+    total_rows: usize,
+    frame: usize,
+    ratio: f32,
+    color_fade: bool,
+    effect: EffectKind,
 }
 
 fn collect_terminal_state(screen: &vt100::Screen, rows: u16, cols: u16) -> TerminalState {
@@ -830,15 +1023,26 @@ fn animate_styled_reveal(
     cells: &[Vec<StyledCell>],
     rows: u16,
     cols: u16,
-    frames: usize,
-    duration_ms: u64,
-    effect: EffectKind,
+    tuning: RevealTuning,
 ) -> Result<()> {
     let _guard = TerminalGuard::enter(true)?;
+    animate_styled_reveal_in_place(cells, rows, cols, tuning)
+}
+
+fn animate_styled_reveal_in_place(
+    cells: &[Vec<StyledCell>],
+    rows: u16,
+    cols: u16,
+    tuning: RevealTuning,
+) -> Result<()> {
     let mut out = io::stdout();
     execute!(out, Clear(ClearType::All), crossterm::cursor::MoveTo(0, 0))?;
-    for frame in 0..frames {
-        let ratio = frame as f32 / frames.saturating_sub(1).max(1) as f32;
+    let preserve_terminal = cells.iter().flatten().all(|cell| {
+        matches!(cell.fg, DisplayColor::Default | DisplayColor::Indexed(_))
+            && matches!(cell.bg, DisplayColor::Default | DisplayColor::Indexed(_))
+    });
+    for frame in 0..tuning.frames {
+        let ratio = frame as f32 / tuning.frames.saturating_sub(1).max(1) as f32;
         execute!(out, crossterm::cursor::MoveTo(0, 0))?;
         for (r, row) in cells.iter().enumerate().take(rows as usize) {
             let mut style_state = None;
@@ -846,8 +1050,22 @@ fn animate_styled_reveal(
                 if cell.wide_continuation {
                     continue;
                 }
-                let text = reveal_text_for_cell(cell, r, c, rows as usize, frame, ratio, effect);
-                write_cell(&mut out, cell, text, &mut style_state)?;
+                let text =
+                    reveal_text_for_cell(cell, r, c, rows as usize, frame, ratio, tuning.effect);
+                let mut animated = cell.clone();
+                if tuning.color_fade && ratio < 1.0 {
+                    if preserve_terminal {
+                        animated.dim = ratio < 0.92;
+                    } else {
+                        animated.fg = animated_faded_color(
+                            animated.fg,
+                            ratio,
+                            tuning.effect,
+                            tuning.darken_factor,
+                        );
+                    }
+                }
+                write_cell(&mut out, &animated, text, &mut style_state)?;
             }
             write!(out, "\x1b[0m")?;
             if r + 1 < rows as usize {
@@ -855,7 +1073,7 @@ fn animate_styled_reveal(
             }
         }
         out.flush()?;
-        sleep_frame(duration_ms, frames);
+        sleep_frame(tuning.duration_ms, tuning.frames);
     }
     execute!(out, crossterm::cursor::MoveTo(0, 0))?;
     for (r, row) in cells.iter().enumerate() {
@@ -885,6 +1103,19 @@ fn reveal_text_for_cell(
 ) -> &str {
     match effect {
         EffectKind::Plain => &cell.text,
+        EffectKind::Wipe => {
+            let row_weight = if total_rows <= 1 {
+                0.0
+            } else {
+                row as f32 / (total_rows - 1) as f32
+            };
+            let threshold = row_weight * 0.55 + (col as f32 / (col + 8) as f32) * 0.45;
+            if ratio >= threshold.clamp(0.0, 1.0) {
+                &cell.text
+            } else {
+                " "
+            }
+        }
         EffectKind::Sweep => {
             let width_gate = (col as f32 + 1.0) / ((col + 8) as f32);
             if ratio >= width_gate.clamp(0.0, 1.0) {
@@ -893,13 +1124,7 @@ fn reveal_text_for_cell(
                 " "
             }
         }
-        EffectKind::Fade => {
-            if ratio >= 0.65 || cell.text.trim().is_empty() {
-                &cell.text
-            } else {
-                " "
-            }
-        }
+        EffectKind::Fade => &cell.text,
         EffectKind::Coalesce => {
             let appear_at = ((row * 17 + col * 7) % 100) as f32 / 100.0;
             let reveal = ((ratio - appear_at * 0.55) / 0.45).clamp(0.0, 1.0);
@@ -911,6 +1136,18 @@ fn reveal_text_for_cell(
                 reveal_noise_symbol(row, col, frame)
             }
         }
+        EffectKind::Glitch => {
+            let instability = (1.0 - ratio).clamp(0.0, 1.0);
+            if cell.text.trim().is_empty() {
+                " "
+            } else if pseudo_random_01(row as u64 + frame as u64 * 3, col as u64 + frame as u64 * 7)
+                < instability * 0.75
+            {
+                reveal_noise_symbol(row, col, frame)
+            } else {
+                &cell.text
+            }
+        }
         EffectKind::Matrix => {
             let state = matrix_cell_state(row, col, total_rows.max(1), ratio);
             if state >= 1.0 {
@@ -919,6 +1156,17 @@ fn reveal_text_for_cell(
                 " "
             } else {
                 reveal_matrix_symbol(row, col, frame)
+            }
+        }
+        EffectKind::Scanline => {
+            let band = ratio * (total_rows.max(1) as f32 + 1.5);
+            let distance = band - row as f32;
+            if distance > 1.5 {
+                &cell.text
+            } else if distance < -0.5 || cell.text.trim().is_empty() {
+                " "
+            } else {
+                reveal_noise_symbol(row, col, frame)
             }
         }
     }
@@ -989,11 +1237,12 @@ fn draw_live_screen(
     out: &mut io::Stdout,
     cells: &[Vec<StyledCell>],
     state: &TerminalState,
-    redraw: &[Vec<bool>],
-    highlight: &[Vec<bool>],
+    masks: RedrawMasks<'_>,
     theme: &Theme,
+    tuning: LiveRenderTuning,
     animation: LiveRenderFrame,
 ) -> io::Result<()> {
+    let preserve_terminal = theme_preserves_terminal_colors(Some(theme));
     match animation.scroll_hint {
         Some(ScrollHint::Up(lines)) => execute!(out, ScrollUp(lines))?,
         Some(ScrollHint::Down(lines)) => execute!(out, ScrollDown(lines))?,
@@ -1001,7 +1250,7 @@ fn draw_live_screen(
     }
     let rows = cells.len();
     for r in 0..rows {
-        if !row_has_changes(redraw, r) {
+        if !row_has_changes(masks.redraw, r) {
             continue;
         }
 
@@ -1015,20 +1264,30 @@ fn draw_live_screen(
             if cell.wide_continuation {
                 continue;
             }
-            if highlight[r][c] && !cell.text.trim().is_empty() {
+            if masks.highlight[r][c] && !cell.text.trim().is_empty() {
                 let mut highlighted = cell.clone();
-                if !theme_preserves_terminal_colors(Some(theme)) {
+                if !preserve_terminal {
                     highlighted.bold = true;
-                    highlighted.fg = DisplayColor::Rgb(theme.default_fg_rgb());
+                }
+                if tuning.color_fade && !preserve_terminal && animation.ratio < 1.0 {
+                    highlighted.fg = animated_faded_color(
+                        highlighted.fg,
+                        animation.ratio,
+                        animation.effect,
+                        tuning.darken_factor,
+                    );
                 }
                 let text = live_render_text_for_cell(
                     cell,
-                    r,
-                    c,
-                    cells.len(),
-                    animation.frame,
-                    animation.ratio,
-                    animation.effect,
+                    CellAnimCtx {
+                        row: r,
+                        col: c,
+                        total_rows: cells.len(),
+                        frame: animation.frame,
+                        ratio: animation.ratio,
+                        color_fade: tuning.color_fade,
+                        effect: animation.effect,
+                    },
                 );
                 write_cell(out, &highlighted, &text, &mut style_state)?;
             } else {
@@ -1049,51 +1308,103 @@ fn draw_live_screen(
     out.flush()
 }
 
-fn live_render_text_for_cell(
-    cell: &StyledCell,
-    row: usize,
-    col: usize,
-    total_rows: usize,
-    frame: usize,
+fn animated_faded_color(
+    color: DisplayColor,
     ratio: f32,
     effect: EffectKind,
-) -> String {
+    darken_factor: f32,
+) -> DisplayColor {
+    let target = match color {
+        DisplayColor::Rgb(rgb) => rgb,
+        _ => return color,
+    };
+    let effect_bias = match effect {
+        EffectKind::Glitch => 0.15,
+        EffectKind::Matrix => -0.08,
+        EffectKind::Scanline => 0.05,
+        _ => 0.0,
+    };
+    let start = darken(target, (darken_factor + effect_bias).clamp(0.0, 1.0));
+    let k = ratio.clamp(0.0, 1.0);
+    DisplayColor::Rgb(Rgb(
+        lerp(start.0, target.0, k),
+        lerp(start.1, target.1, k),
+        lerp(start.2, target.2, k),
+    ))
+}
+
+fn live_render_text_for_cell(cell: &StyledCell, ctx: CellAnimCtx) -> String {
     if cell.text.trim().is_empty() {
         return cell.text.clone();
     }
 
-    match effect {
+    match ctx.effect {
         EffectKind::Plain => cell.text.clone(),
-        EffectKind::Sweep => {
-            let width_gate = (col as f32 + 1.0) / ((col + 8) as f32);
-            if ratio >= width_gate.clamp(0.0, 1.0) {
+        EffectKind::Wipe => {
+            let row_weight = if ctx.total_rows <= 1 {
+                0.0
+            } else {
+                ctx.row as f32 / (ctx.total_rows - 1) as f32
+            };
+            let threshold = row_weight * 0.55 + (ctx.col as f32 / (ctx.col + 8) as f32) * 0.45;
+            if ctx.ratio >= threshold.clamp(0.0, 1.0) {
                 cell.text.clone()
             } else {
-                reveal_noise_symbol(row, col, frame).to_string()
+                " ".to_string()
+            }
+        }
+        EffectKind::Sweep => {
+            let width_gate = (ctx.col as f32 + 1.0) / ((ctx.col + 8) as f32);
+            let gate = width_gate.clamp(0.0, 1.0);
+            if ctx.ratio >= gate || (ctx.color_fade && ctx.ratio >= gate * 0.6) {
+                cell.text.clone()
+            } else {
+                reveal_noise_symbol(ctx.row, ctx.col, ctx.frame).to_string()
             }
         }
         EffectKind::Fade => {
-            if ratio >= 0.6 {
+            if ctx.ratio >= 0.6 || (ctx.color_fade && ctx.ratio >= 0.25) {
                 cell.text.clone()
             } else {
-                reveal_noise_symbol(row, col, frame).to_string()
+                reveal_noise_symbol(ctx.row, ctx.col, ctx.frame).to_string()
             }
         }
         EffectKind::Coalesce => {
-            let appear_at = ((row * 17 + col * 7) % 100) as f32 / 100.0;
-            let reveal = ((ratio - appear_at * 0.55) / 0.45).clamp(0.0, 1.0);
-            if reveal >= 0.98 {
+            let appear_at = ((ctx.row * 17 + ctx.col * 7) % 100) as f32 / 100.0;
+            let reveal = ((ctx.ratio - appear_at * 0.55) / 0.45).clamp(0.0, 1.0);
+            if reveal >= 0.98 || (ctx.color_fade && reveal >= 0.42) {
                 cell.text.clone()
             } else {
-                reveal_noise_symbol(row, col, frame).to_string()
+                reveal_noise_symbol(ctx.row, ctx.col, ctx.frame).to_string()
+            }
+        }
+        EffectKind::Glitch => {
+            let instability = (1.0 - ctx.ratio).clamp(0.0, 1.0);
+            if pseudo_random_01(
+                ctx.row as u64 + ctx.frame as u64 * 3,
+                ctx.col as u64 + ctx.frame as u64 * 7,
+            ) < instability * 0.75
+            {
+                reveal_noise_symbol(ctx.row, ctx.col, ctx.frame).to_string()
+            } else {
+                cell.text.clone()
             }
         }
         EffectKind::Matrix => {
-            let state = matrix_cell_state(row, col, total_rows.max(1), ratio);
-            if state >= 1.0 {
+            let state = matrix_cell_state(ctx.row, ctx.col, ctx.total_rows.max(1), ctx.ratio);
+            if state >= 1.0 || (ctx.color_fade && state >= 0.0) {
                 cell.text.clone()
             } else {
-                reveal_matrix_symbol(row, col, frame).to_string()
+                reveal_matrix_symbol(ctx.row, ctx.col, ctx.frame).to_string()
+            }
+        }
+        EffectKind::Scanline => {
+            let band = ctx.ratio * (ctx.total_rows.max(1) as f32 + 1.5);
+            let distance = band - ctx.row as f32;
+            if distance > 1.5 || (ctx.color_fade && distance >= 0.0) {
+                cell.text.clone()
+            } else {
+                reveal_noise_symbol(ctx.row, ctx.col, ctx.frame).to_string()
             }
         }
     }
@@ -1259,6 +1570,20 @@ fn write_display_color(out: &mut io::Stdout, fg: bool, color: DisplayColor) -> i
 fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
     match effect {
         EffectKind::Plain => text.to_string(),
+        EffectKind::Wipe => {
+            let count = text.chars().count().max(1);
+            text.chars()
+                .enumerate()
+                .map(|(idx, ch)| {
+                    let threshold = idx as f32 / count as f32;
+                    if ratio >= threshold {
+                        ch
+                    } else {
+                        ' '
+                    }
+                })
+                .collect()
+        }
         EffectKind::Sweep => {
             let count = text.chars().count().max(1);
             let visible = (ratio * count as f32).ceil() as usize;
@@ -1288,6 +1613,20 @@ fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
                 })
                 .collect()
         }
+        EffectKind::Glitch => text
+            .chars()
+            .enumerate()
+            .map(|(idx, ch)| {
+                if ch.is_whitespace() {
+                    return ch;
+                }
+                if pseudo_random_01(idx as u64, (ratio * 1000.0) as u64) < (1.0 - ratio) * 0.75 {
+                    ['.', ':', '+', '*', '#', '%', '@'][(idx + (ratio * 100.0) as usize) % 7]
+                } else {
+                    ch
+                }
+            })
+            .collect(),
         EffectKind::Matrix => text
             .chars()
             .enumerate()
@@ -1303,6 +1642,23 @@ fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
                 }
             })
             .collect(),
+        EffectKind::Scanline => {
+            if ratio >= 0.85 {
+                text.to_string()
+            } else {
+                text.chars()
+                    .enumerate()
+                    .map(|(idx, ch)| {
+                        if ch.is_whitespace() {
+                            ch
+                        } else {
+                            ['.', ':', '+', '*', '#', '%', '@']
+                                [(idx + (ratio * 100.0) as usize) % 7]
+                        }
+                    })
+                    .collect()
+            }
+        }
     }
 }
 
@@ -1419,6 +1775,26 @@ mod tests {
     }
 
     #[test]
+    fn live_passthrough_tracks_split_mouse_enable_sequence() {
+        let mut passthrough = LivePassthrough::default();
+        let mut out = Vec::new();
+
+        passthrough.feed(&mut out, b"\x1b[?10").expect("feed should work");
+        assert!(!passthrough.mouse_reporting_active);
+        passthrough
+            .feed(&mut out, b"00h")
+            .expect("second feed should work");
+
+        assert!(passthrough.mouse_reporting_active);
+    }
+
+    #[test]
+    fn live_passthrough_keeps_partial_suffix_for_next_chunk() {
+        assert_eq!(longest_live_passthrough_suffix(b"\x1b[?10"), 5);
+        assert_eq!(longest_live_passthrough_suffix(b"hello"), 0);
+    }
+
+    #[test]
     fn noise_suppression_input_matches_up_down_and_wheel_or_drag() {
         assert!(contains_noise_suppression_input(b"\x1b[A"));
         assert!(contains_noise_suppression_input(b"\x1b[B"));
@@ -1451,6 +1827,10 @@ mod tests {
         assert_eq!(live_render_effect_ratios(EffectKind::Plain), &[1.0]);
         assert_eq!(live_render_effect_ratios(EffectKind::Fade), &[0.35, 1.0]);
         assert_eq!(
+            live_render_effect_ratios(EffectKind::Wipe),
+            &[0.2, 0.55, 1.0]
+        );
+        assert_eq!(
             live_render_effect_ratios(EffectKind::Sweep),
             &[0.25, 0.65, 1.0]
         );
@@ -1459,17 +1839,53 @@ mod tests {
             &[0.12, 0.38, 0.72, 1.0]
         );
         assert_eq!(
+            live_render_effect_ratios(EffectKind::Glitch),
+            &[0.08, 0.16, 0.32, 0.55, 1.0]
+        );
+        assert_eq!(
             live_render_effect_ratios(EffectKind::Matrix),
             &[0.08, 0.24, 0.45, 0.72, 1.0]
         );
+        assert_eq!(
+            live_render_effect_ratios(EffectKind::Scanline),
+            &[0.12, 0.35, 0.68, 1.0]
+        );
+    }
+
+    #[test]
+    fn live_render_per_frame_ms_uses_configured_duration_without_tight_clamp() {
+        assert_eq!(live_render_per_frame_ms(8000, EffectKind::Coalesce), 2000);
+        assert_eq!(live_render_per_frame_ms(90, EffectKind::Fade), 45);
     }
 
     #[test]
     fn live_render_coalesce_uses_noise_before_settling() {
         let cell = cell_with("X", &StyledCell::blank(None));
 
-        let early = live_render_text_for_cell(&cell, 0, 0, 1, 0, 0.12, EffectKind::Coalesce);
-        let late = live_render_text_for_cell(&cell, 0, 0, 1, 3, 1.0, EffectKind::Coalesce);
+        let early = live_render_text_for_cell(
+            &cell,
+            CellAnimCtx {
+                row: 0,
+                col: 0,
+                total_rows: 1,
+                frame: 0,
+                ratio: 0.12,
+                color_fade: false,
+                effect: EffectKind::Coalesce,
+            },
+        );
+        let late = live_render_text_for_cell(
+            &cell,
+            CellAnimCtx {
+                row: 0,
+                col: 0,
+                total_rows: 1,
+                frame: 3,
+                ratio: 1.0,
+                color_fade: false,
+                effect: EffectKind::Coalesce,
+            },
+        );
 
         assert_ne!(early, " ");
         assert_eq!(late, "X");
@@ -1479,10 +1895,63 @@ mod tests {
     fn live_render_matrix_uses_noise_before_settling() {
         let cell = cell_with("X", &StyledCell::blank(None));
 
-        let early = live_render_text_for_cell(&cell, 0, 0, 1, 0, 0.08, EffectKind::Matrix);
-        let late = live_render_text_for_cell(&cell, 0, 0, 1, 4, 1.0, EffectKind::Matrix);
+        let early = live_render_text_for_cell(
+            &cell,
+            CellAnimCtx {
+                row: 0,
+                col: 0,
+                total_rows: 1,
+                frame: 0,
+                ratio: 0.08,
+                color_fade: false,
+                effect: EffectKind::Matrix,
+            },
+        );
+        let late = live_render_text_for_cell(
+            &cell,
+            CellAnimCtx {
+                row: 0,
+                col: 0,
+                total_rows: 1,
+                frame: 4,
+                ratio: 1.0,
+                color_fade: false,
+                effect: EffectKind::Matrix,
+            },
+        );
 
         assert_ne!(early, " ");
+        assert_eq!(late, "X");
+    }
+
+    #[test]
+    fn live_render_coalesce_with_color_fade_shows_original_char_earlier() {
+        let cell = cell_with("X", &StyledCell::blank(None));
+
+        let mid = live_render_text_for_cell(
+            &cell,
+            CellAnimCtx {
+                row: 0,
+                col: 0,
+                total_rows: 1,
+                frame: 1,
+                ratio: 0.5,
+                color_fade: true,
+                effect: EffectKind::Coalesce,
+            },
+        );
+
+        assert_eq!(mid, "X");
+    }
+
+    #[test]
+    fn reveal_fade_keeps_original_text_visible() {
+        let cell = cell_with("X", &StyledCell::blank(None));
+
+        let early = reveal_text_for_cell(&cell, 0, 0, 1, 0, 0.1, EffectKind::Fade);
+        let late = reveal_text_for_cell(&cell, 0, 0, 1, 3, 1.0, EffectKind::Fade);
+
+        assert_eq!(early, "X");
         assert_eq!(late, "X");
     }
 
@@ -1510,6 +1979,17 @@ mod tests {
         let changed = no_screen_changed(&cells);
 
         assert_eq!(changed, vec![vec![false, false], vec![false]]);
+    }
+
+    #[test]
+    fn animated_faded_color_recovers_target_color() {
+        let target = DisplayColor::Rgb(Rgb(200, 100, 50));
+
+        let faded = animated_faded_color(target, 0.2, EffectKind::Matrix, 0.25);
+        let settled = animated_faded_color(target, 1.0, EffectKind::Matrix, 0.25);
+
+        assert_ne!(faded, target);
+        assert_eq!(settled, target);
     }
 
     #[test]

@@ -16,29 +16,33 @@ pub(crate) enum Backend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Feature {
     #[serde(alias = "reveal")]
     Reveal,
-    #[serde(alias = "live_color")]
+    #[serde(alias = "live-color")]
     LiveColor,
     #[serde(alias = "keymap")]
     Keymap,
-    #[serde(alias = "inline_animation")]
+    #[serde(alias = "inline-animation")]
     InlineAnimation,
     #[serde(alias = "splash")]
     Splash,
-    #[serde(alias = "live_render")]
+    #[serde(alias = "live-render")]
     LiveRender,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Mode {
     Reveal,
+    #[value(name = "color_live")]
+    #[serde(alias = "color-live")]
     ColorLive,
     Splash,
     /// Experimental: rebuild the live screen from VT100 state and flash changed cells.
+    #[value(name = "live_render")]
+    #[serde(alias = "live-render")]
     LiveRender,
 }
 
@@ -46,8 +50,11 @@ pub(crate) enum Mode {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum EffectKind {
     Coalesce,
+    Glitch,
     Matrix,
+    Scanline,
     Sweep,
+    Wipe,
     Fade,
     Plain,
 }
@@ -90,6 +97,12 @@ pub(crate) struct Cli {
 
     #[arg(long, default_value_t = 180)]
     pub(crate) live_render_mouse_quiet_ms: u64,
+
+    #[arg(long, default_value_t = false)]
+    pub(crate) animation_color_fade: bool,
+
+    #[arg(long, default_value_t = 0.25)]
+    pub(crate) animation_color_darken_factor: f32,
 
     #[arg(long, default_value_t = 200)]
     pub(crate) max_lines: usize,
@@ -134,6 +147,8 @@ pub(crate) struct Profile {
     pub(crate) frames: Option<usize>,
     pub(crate) live_render_duration_ms: Option<u64>,
     pub(crate) live_render_mouse_quiet_ms: Option<u64>,
+    pub(crate) animation_color_fade: Option<bool>,
+    pub(crate) animation_color_darken_factor: Option<f32>,
     pub(crate) max_lines: Option<usize>,
     pub(crate) max_bytes: Option<usize>,
     pub(crate) animate_over_limit: Option<bool>,
@@ -197,6 +212,8 @@ pub(crate) struct Runtime {
     pub(crate) frames: usize,
     pub(crate) live_render_duration_ms: u64,
     pub(crate) live_render_mouse_quiet_ms: u64,
+    pub(crate) animation_color_fade: bool,
+    pub(crate) animation_color_darken_factor: f32,
     pub(crate) max_lines: usize,
     pub(crate) max_bytes: usize,
     pub(crate) animate_over_limit: bool,

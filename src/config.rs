@@ -66,7 +66,7 @@ fn build_runtime_with_env(
     let effect = cli
         .effect
         .or(profile.effect)
-        .unwrap_or_else(|| default_effect_for_backend(backend));
+        .unwrap_or_else(|| default_effect_for_backend(backend, &features));
 
     let capture_ms = profile.capture_ms.unwrap_or(cli.capture_ms);
     let duration_ms = profile.duration_ms.unwrap_or(cli.duration_ms);
@@ -77,6 +77,13 @@ fn build_runtime_with_env(
     let live_render_mouse_quiet_ms = profile
         .live_render_mouse_quiet_ms
         .unwrap_or(cli.live_render_mouse_quiet_ms);
+    let animation_color_fade = profile
+        .animation_color_fade
+        .unwrap_or(cli.animation_color_fade);
+    let animation_color_darken_factor = profile
+        .animation_color_darken_factor
+        .unwrap_or(cli.animation_color_darken_factor)
+        .clamp(0.0, 1.0);
 
     let palette = profile.palette.unwrap_or(cli.palette);
     let needs_theme = (backend == Backend::Tui
@@ -133,6 +140,8 @@ fn build_runtime_with_env(
         frames,
         live_render_duration_ms,
         live_render_mouse_quiet_ms,
+        animation_color_fade,
+        animation_color_darken_factor,
         max_lines,
         max_bytes,
         animate_over_limit,
@@ -240,9 +249,10 @@ fn mode_to_features(mode: Mode) -> Vec<Feature> {
     }
 }
 
-fn default_effect_for_backend(backend: Backend) -> EffectKind {
+fn default_effect_for_backend(backend: Backend, _features: &BTreeSet<Feature>) -> EffectKind {
     match backend {
-        Backend::Cli | Backend::Tui => EffectKind::Coalesce,
+        Backend::Tui => EffectKind::Fade,
+        Backend::Cli => EffectKind::Coalesce,
         Backend::Raw | Backend::Auto => EffectKind::Plain,
     }
 }
@@ -347,6 +357,17 @@ mod tests {
     }
 
     #[test]
+    fn default_effect_is_fade_for_tui() {
+        let profile = Profile::default();
+        let features = resolve_features(&profile, None, Backend::Tui);
+
+        assert_eq!(
+            default_effect_for_backend(Backend::Tui, &features),
+            EffectKind::Fade
+        );
+    }
+
+    #[test]
     fn cli_mode_adds_live_color_feature() {
         let profile = Profile::default();
         let features = resolve_features(&profile, Some(Mode::ColorLive), Backend::Tui);
@@ -379,6 +400,8 @@ profiles:
     cli_settled_color: "#b6ffd0"
     cli_gradient_start: "#004d26"
     cli_gradient_end: "#eafff2"
+    animation_color_fade: true
+    animation_color_darken_factor: 0.2
 "##,
         )
         .expect("fixture config should be written");
@@ -430,6 +453,8 @@ profiles:
     cli_settled_color: "#b6ffd0"
     cli_gradient_start: "#004d26"
     cli_gradient_end: "#eafff2"
+    animation_color_fade: true
+    animation_color_darken_factor: 0.2
     duration_ms: 900
     frames: 20
 "##,
@@ -452,6 +477,8 @@ profiles:
                 frames: 24,
                 live_render_duration_ms: 90,
                 live_render_mouse_quiet_ms: 180,
+                animation_color_fade: false,
+                animation_color_darken_factor: 0.25,
                 max_lines: 200,
                 max_bytes: 1_000_000,
                 animate_over_limit: false,
@@ -470,6 +497,8 @@ profiles:
         assert_eq!(runtime.effect, EffectKind::Sweep);
         assert_eq!(runtime.frames, 20);
         assert_eq!(runtime.duration_ms, 900);
+        assert!(runtime.animation_color_fade);
+        assert_eq!(runtime.animation_color_darken_factor, 0.2);
         assert_eq!(
             runtime.cli_settled_color,
             Some(crate::model::Rgb(0xb6, 0xff, 0xd0))
@@ -503,6 +532,8 @@ profiles:
                 frames: 24,
                 live_render_duration_ms: 90,
                 live_render_mouse_quiet_ms: 180,
+                animation_color_fade: false,
+                animation_color_darken_factor: 0.25,
                 max_lines: 200,
                 max_bytes: 1_000_000,
                 animate_over_limit: false,

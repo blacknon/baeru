@@ -199,11 +199,45 @@ fn render_cli_frame(
 ) -> String {
     match effect {
         EffectKind::Plain => line.to_string(),
+        EffectKind::Wipe => cli_wipe_frame(line, frame, row, total_rows, total_frames),
         EffectKind::Sweep => cli_sweep_frame(line, frame, total_frames),
         EffectKind::Fade => cli_fade_frame(line, frame, total_frames),
         EffectKind::Coalesce => cli_coalesce_frame(line, frame, row, total_frames),
+        EffectKind::Glitch => cli_glitch_frame(line, frame, row, total_frames),
         EffectKind::Matrix => cli_matrix_frame(line, frame, row, total_rows, total_frames),
+        EffectKind::Scanline => cli_scanline_frame(line, frame, row, total_rows, total_frames),
     }
+}
+
+fn cli_wipe_frame(
+    line: &str,
+    frame: usize,
+    row: usize,
+    total_rows: usize,
+    total_frames: usize,
+) -> String {
+    let progress = frame as f32 / total_frames.max(1) as f32;
+    let chars: Vec<char> = line.chars().collect();
+    let row_weight = if total_rows <= 1 {
+        0.0
+    } else {
+        row as f32 / (total_rows - 1) as f32
+    };
+    let len = chars.len().max(1);
+
+    chars
+        .iter()
+        .enumerate()
+        .map(|(col, &ch)| {
+            let col_weight = col as f32 / len as f32;
+            let threshold = row_weight * 0.55 + col_weight * 0.45;
+            if progress >= threshold {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 fn cli_sweep_frame(line: &str, frame: usize, total_frames: usize) -> String {
@@ -251,6 +285,26 @@ fn cli_coalesce_frame(line: &str, frame: usize, row: usize, total_frames: usize)
         .collect()
 }
 
+fn cli_glitch_frame(line: &str, frame: usize, row: usize, total_frames: usize) -> String {
+    let progress = frame as f32 / total_frames.max(1) as f32;
+    let instability = (1.0 - progress).clamp(0.0, 1.0);
+
+    line.chars()
+        .enumerate()
+        .map(|(col, ch)| {
+            if ch.is_whitespace() {
+                return ch;
+            }
+            let gate = pseudo_random_01(row as u64 + frame as u64, col as u64);
+            if gate < instability * 0.75 {
+                matrix_noise_symbol(row, col, frame)
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
 fn cli_matrix_frame(
     line: &str,
     frame: usize,
@@ -271,6 +325,36 @@ fn cli_matrix_frame(
 
             let state = matrix_cell_state(row, col, total_rows.max(1), progress);
             if state >= 1.0 {
+                ch
+            } else {
+                matrix_noise_symbol(row, col, frame)
+            }
+        })
+        .collect()
+}
+
+fn cli_scanline_frame(
+    line: &str,
+    frame: usize,
+    row: usize,
+    total_rows: usize,
+    total_frames: usize,
+) -> String {
+    let progress = frame as f32 / total_frames.max(1) as f32;
+    let band = progress * (total_rows.max(1) as f32 + 1.5);
+    let distance = band - row as f32;
+
+    if distance > 1.5 {
+        return line.to_string();
+    }
+    if distance < -0.5 {
+        return " ".repeat(line.chars().count());
+    }
+
+    line.chars()
+        .enumerate()
+        .map(|(col, ch)| {
+            if ch.is_whitespace() {
                 ch
             } else {
                 matrix_noise_symbol(row, col, frame)
@@ -355,6 +439,22 @@ mod tests {
     #[test]
     fn cli_matrix_frame_preserves_whitespace() {
         let rendered = cli_matrix_frame("a b", 0, 0, 3, 10);
+        let chars: Vec<char> = rendered.chars().collect();
+
+        assert_eq!(chars[1], ' ');
+    }
+
+    #[test]
+    fn cli_glitch_frame_preserves_whitespace() {
+        let rendered = cli_glitch_frame("a b", 0, 0, 10);
+        let chars: Vec<char> = rendered.chars().collect();
+
+        assert_eq!(chars[1], ' ');
+    }
+
+    #[test]
+    fn cli_scanline_frame_preserves_whitespace() {
+        let rendered = cli_scanline_frame("a b", 0, 0, 3, 10);
         let chars: Vec<char> = rendered.chars().collect();
 
         assert_eq!(chars[1], ' ');

@@ -99,9 +99,9 @@ Explicit examples:
 
 ```bash
 cargo run -- --mode reveal -- htop
-cargo run -- --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
+cargo run -- --mode color_live --theme-file examples/themes/jirai-pink.yml -- htop
 cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml --keymap-file examples/keymaps/htop-vim.yml -- htop
-cargo run -- --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
+cargo run -- --mode live_render --theme-file examples/themes/jirai-pink.yml -- htop
 cargo run -- --backend cli -- ls -la
 cargo run -- --backend cli -- git status
 ```
@@ -167,10 +167,13 @@ For plain passthrough behavior without added effects.
 | TUI | `live_color` | live color transform | stable PoC | ANSI SGR rewrite, supports palette replacement |
 | TUI | `keymap` | input remap | stable PoC | YAML-driven byte-sequence remapping |
 | TUI | `splash` | startup animation | stable PoC | simple pre-launch splash |
-| TUI | `live-render` | live redraw animation | experimental | VT100 rebuild + changed-cell flash |
+| TUI | `live_render` | live redraw animation | experimental | VT100 rebuild + changed-cell flash |
 | CLI | `inline_animation` + `coalesce` | inline animation | stable PoC | noisy symbols converge into final text |
+| CLI | `inline_animation` + `glitch` | inline animation | stable PoC | flickery noisy instability that settles quickly |
 | CLI | `inline_animation` + `matrix` | inline animation | stable PoC | column-biased digital-rain style convergence |
+| CLI | `inline_animation` + `scanline` | inline animation | stable PoC | moving scan band reveals text as it passes |
 | CLI | `inline_animation` + `sweep` | inline animation | stable PoC | left-to-right reveal |
+| CLI | `inline_animation` + `wipe` | inline animation | stable PoC | diagonal wipe from sparse to full text |
 | CLI | `inline_animation` + `fade` | inline animation | stable PoC | delayed text appearance |
 | CLI | `inline_animation` + `plain` | passthrough-style | stable PoC | same backend path, no animation |
 
@@ -225,8 +228,11 @@ Animates CLI output inline below the prompt.
 Supported effects:
 
 - `coalesce`
+- `glitch`
 - `matrix`
+- `scanline`
 - `sweep`
+- `wipe`
 - `fade`
 - `plain`
 
@@ -249,12 +255,12 @@ Sample GIFs:
 
 ![baeru cli fade demo](assets/cli-fade.gif)
 
-### `live-render` experimental
+### `live_render` experimental
 
 Rebuilds the target TUI screen from VT100 state, redraws it from `baeru`, and animates changed cells during live updates.
 
 ```bash
-baeru --mode live-render --theme-file examples/themes/jirai-pink.yml -- htop
+baeru --mode live_render --theme-file examples/themes/jirai-pink.yml -- htop
 ```
 
 This mode is still intentionally experimental, but it is no longer just a full-screen redraw toy.
@@ -265,7 +271,7 @@ Current improvements include:
 - cursor visibility / cursor position restoration
 - PTY resize propagation and parser recreation on terminal resize
 - mouse / cursor-mode / bracketed-paste passthrough for better input fidelity
-- short live update animation with `coalesce` / `matrix` / `sweep` / `fade` / `plain`
+- short live update animation with `coalesce` / `glitch` / `matrix` / `scanline` / `sweep` / `wipe` / `fade` / `plain`
 
 Recommended profile-style tuning:
 
@@ -282,10 +288,13 @@ profiles:
     keymap_file: examples/keymaps/htop-vim.yml
     live_render_duration_ms: 90
     live_render_mouse_quiet_ms: 180
+    animation_color_fade: true
+    animation_color_darken_factor: 0.22
 ```
 
 `live_render_duration_ms` controls the short redraw animation window.
 `live_render_mouse_quiet_ms` controls how long `baeru` stays in quieter redraw mode after wheel / drag / up-down style input.
+`animation_color_fade` darkens characters before they settle to their target colors during `reveal` and `live_render`.
 
 ## Configuration
 
@@ -309,7 +318,9 @@ profiles:
       - reveal
       - live_color
       - keymap
-    effect: coalesce
+    # omit `effect` to use the default TUI fade
+    animation_color_fade: true
+    animation_color_darken_factor: 0.22
     keymap_file: examples/keymaps/htop-vim.yml
     theme_file: examples/themes/jirai-pink.yml
     capture_ms: 360
@@ -336,6 +347,8 @@ profiles:
     keymap_file: examples/keymaps/htop-vim.yml
     live_render_duration_ms: 90
     live_render_mouse_quiet_ms: 180
+    animation_color_fade: true
+    animation_color_darken_factor: 0.22
 ```
 
 ### Theme YAML
@@ -426,7 +439,7 @@ Example keymap files live under:
 
 - This is still a PoC. Terminal restoration and signal handling can be hardened further.
 - `reveal` captures a single approximate startup screen. Very unstable startup screens may need `capture_ms` tuning.
-- `live-render` is experimental. It is more usable now, but complex TUIs may still flicker, briefly desynchronize, or lose some emulator-specific behavior.
+- `live_render` is experimental. It is more usable now, but complex TUIs may still flicker, briefly desynchronize, or lose some emulator-specific behavior.
 - CLI inline animation is still less robust than plain passthrough for some terminals and very large outputs.
 - Key remapping is byte-sequence based. Complex keyboard protocols and emulator-reserved shortcuts still need more careful handling.
 - Mouse mapping is not implemented yet, though the architecture leaves room for a future `mousemap` layer.
