@@ -567,7 +567,7 @@ impl CliScreen {
         while row.len() <= self.cursor_col {
             row.push(CliStyledChar {
                 ch: ' ',
-                style: self.style,
+                style: CliStyle::default(),
             });
         }
     }
@@ -1002,6 +1002,16 @@ mod tests {
         let lines = split_ansi_plain_lines_preserve_tail("left\x1b[4Cright");
 
         assert_eq!(lines, vec!["left    right".to_string()]);
+    }
+
+    #[test]
+    fn split_ansi_lines_preserve_tail_does_not_paint_cursor_forward_gap_with_current_style() {
+        let lines = split_ansi_lines_preserve_tail("\x1b[30m\x1b[40m\x1b[4Cxxx");
+
+        assert_eq!(plain_line_from_styled(&lines[0]), "    xxx");
+        assert_eq!(lines[0][0].style, CliStyle::default());
+        assert_eq!(lines[0][3].style, CliStyle::default());
+        assert_eq!(lines[0][4].style.bg, CliDisplayColor::Indexed(0));
     }
 
     #[test]
