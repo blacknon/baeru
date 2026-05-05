@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{ArgAction, Args, Parser, ValueEnum};
 use regex::Regex;
 use serde::Deserialize;
 use std::{
@@ -61,43 +61,51 @@ pub(crate) enum EffectKind {
     Plain,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "baeru", version, about = "Make existing terminal apps glow up")]
-pub(crate) struct Cli {
-    #[arg(long, value_enum)]
+#[derive(Debug, Clone, Args)]
+#[command(next_help_heading = "Selection")]
+pub(crate) struct SelectionArgs {
+    #[arg(short = 'b', long, value_enum)]
     pub(crate) backend: Option<Backend>,
 
-    #[arg(long, value_enum)]
+    #[arg(short = 'm', long, value_enum)]
     pub(crate) mode: Option<Mode>,
 
-    #[arg(long, value_enum)]
+    #[arg(short = 'E', long, value_enum)]
     pub(crate) effect: Option<EffectKind>,
+}
 
-    #[arg(long)]
+#[derive(Debug, Clone, Args)]
+#[command(next_help_heading = "Files")]
+pub(crate) struct FileArgs {
+    #[arg(short = 'c', long)]
     pub(crate) config_file: Option<PathBuf>,
 
-    #[arg(long)]
+    #[arg(short = 't', long)]
     pub(crate) theme_file: Option<PathBuf>,
 
-    #[arg(long, default_value = "default")]
+    #[arg(short = 'p', long, default_value = "default")]
     pub(crate) palette: String,
 
-    #[arg(long)]
+    #[arg(short = 'k', long)]
     pub(crate) keymap_file: Option<PathBuf>,
+}
 
-    #[arg(long, default_value_t = 360)]
+#[derive(Debug, Clone, Args)]
+#[command(next_help_heading = "Animation")]
+pub(crate) struct AnimationArgs {
+    #[arg(short = 'C', long, default_value_t = 360)]
     pub(crate) capture_ms: u64,
 
-    #[arg(long, default_value_t = 720)]
+    #[arg(short = 'd', long, default_value_t = 720)]
     pub(crate) duration_ms: u64,
 
-    #[arg(long, default_value_t = 24)]
+    #[arg(short = 'f', long, default_value_t = 24)]
     pub(crate) frames: usize,
 
-    #[arg(long, default_value_t = 90)]
+    #[arg(short = 'D', long, default_value_t = 90)]
     pub(crate) live_render_duration_ms: u64,
 
-    #[arg(long, default_value_t = 180)]
+    #[arg(short = 'Q', long, default_value_t = 180)]
     pub(crate) live_render_mouse_quiet_ms: u64,
 
     #[arg(long, default_value_t = false)]
@@ -106,23 +114,72 @@ pub(crate) struct Cli {
     #[arg(long, default_value_t = 0.25)]
     pub(crate) animation_color_darken_factor: f32,
 
-    #[arg(long, default_value_t = 200)]
+    #[arg(short = 'N', long, default_value_t = false)]
+    pub(crate) no_theme_after_reveal: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(next_help_heading = "CLI")]
+pub(crate) struct CliRenderArgs {
+    #[arg(short = 'l', long, default_value_t = 200)]
     pub(crate) max_lines: usize,
 
-    #[arg(long, default_value_t = 1_000_000)]
+    #[arg(short = 'B', long, default_value_t = 1_000_000)]
     pub(crate) max_bytes: usize,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(short = 'o', long, default_value_t = false)]
     pub(crate) animate_over_limit: bool,
+}
 
-    #[arg(long, default_value_t = false)]
-    pub(crate) no_theme_after_reveal: bool,
-
+#[derive(Debug, Clone, Args)]
+#[command(next_help_heading = "Highlight")]
+pub(crate) struct HighlightArgs {
     #[arg(short = 'e', long = "highlight")]
     pub(crate) highlight: Vec<String>,
 
-    #[arg(long)]
+    #[arg(short = 'H', long)]
     pub(crate) highlight_color: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(next_help_heading = "Transform")]
+pub(crate) struct TransformArgs {
+    #[arg(
+        short = 'R',
+        long = "replace",
+        value_names = ["PATTERN", "TEXT"],
+        num_args = 2,
+        action = ArgAction::Append
+    )]
+    pub(crate) replace: Vec<String>,
+
+    #[arg(short = 'M', long = "mask")]
+    pub(crate) mask: Vec<String>,
+
+    #[arg(long = "mask-char", default_value = "*")]
+    pub(crate) mask_char: String,
+}
+
+#[derive(Debug, Clone, Parser)]
+#[command(name = "baeru", version, about = "Make existing terminal apps glow up")]
+pub(crate) struct Cli {
+    #[command(flatten)]
+    pub(crate) selection: SelectionArgs,
+
+    #[command(flatten)]
+    pub(crate) files: FileArgs,
+
+    #[command(flatten)]
+    pub(crate) animation: AnimationArgs,
+
+    #[command(flatten)]
+    pub(crate) cli_render: CliRenderArgs,
+
+    #[command(flatten)]
+    pub(crate) highlight: HighlightArgs,
+
+    #[command(flatten)]
+    pub(crate) transform: TransformArgs,
 
     #[arg(last = true, allow_hyphen_values = true)]
     pub(crate) command: Vec<OsString>,
@@ -167,6 +224,10 @@ pub(crate) struct Profile {
     pub(crate) highlight_color: Option<String>,
     #[serde(default)]
     pub(crate) highlight_rules: Vec<HighlightRuleConfig>,
+    #[serde(default)]
+    pub(crate) replace_rules: Vec<ReplaceRuleConfig>,
+    #[serde(default)]
+    pub(crate) mask_rules: Vec<MaskRuleConfig>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -194,6 +255,18 @@ pub(crate) struct HighlightRuleConfig {
     #[serde(default)]
     pub(crate) capture_cli_text: bool,
     pub(crate) output_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub(crate) struct ReplaceRuleConfig {
+    pub(crate) pattern: String,
+    pub(crate) replacement: String,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub(crate) struct MaskRuleConfig {
+    pub(crate) pattern: String,
+    pub(crate) mask_char: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -247,6 +320,7 @@ pub(crate) struct Runtime {
     pub(crate) cli_gradient_end: Option<Rgb>,
     pub(crate) no_theme_after_reveal: bool,
     pub(crate) highlight_rules: Vec<HighlightRule>,
+    pub(crate) output_transforms: Vec<OutputTransformRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +333,18 @@ pub(crate) struct HighlightRule {
     pub(crate) capture_tui_screenshot: bool,
     pub(crate) capture_cli_text: bool,
     pub(crate) output_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OutputTransformRule {
+    pub(crate) regex: Regex,
+    pub(crate) kind: OutputTransformKind,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum OutputTransformKind {
+    Replace(String),
+    Mask(char),
 }
 
 pub(crate) const CLI_SCRAMBLE: &[char] = &[

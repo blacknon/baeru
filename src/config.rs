@@ -1,8 +1,9 @@
 use crate::{
     keymap::{compile_keymap, read_keymap},
     model::{
-        Backend, Cli, ConfigFile, EffectKind, Feature, HighlightRule, HighlightRuleConfig, Mode,
-        Profile, Rgb, Runtime,
+        Backend, Cli, ConfigFile, EffectKind, Feature, HighlightRule, HighlightRuleConfig,
+        MaskRuleConfig, Mode, OutputTransformKind, OutputTransformRule, Profile, ReplaceRuleConfig,
+        Rgb, Runtime,
     },
     support::{env_flag, is_term_dumb},
     theme::{builtin_theme, parse_optional_rgb, read_theme},
@@ -33,20 +34,33 @@ fn build_runtime_with_env(
     term_is_dumb: bool,
     no_color: bool,
 ) -> Result<Runtime> {
-    let command = if cli.command.is_empty() && stdin_is_tty {
+    let Cli {
+        selection,
+        files,
+        animation,
+        cli_render,
+        highlight,
+        transform,
+        command: cli_command,
+    } = cli;
+
+    let command = if cli_command.is_empty() && stdin_is_tty {
         vec![OsString::from("htop")]
     } else {
-        cli.command.clone()
+        cli_command.clone()
     };
 
-    let config = match resolve_config_path(cli.config_file.as_deref()) {
+    let config = match resolve_config_path(files.config_file.as_deref()) {
         Some(path) => read_config(&path)
             .with_context(|| format!("failed to read config: {}", path.display()))?,
         None => ConfigFile::default(),
     };
     let profile = find_profile(&config, &command).cloned().unwrap_or_default();
 
-    let requested_backend = cli.backend.or(profile.backend).unwrap_or(Backend::Auto);
+    let requested_backend = selection
+        .backend
+        .or(profile.backend)
+        .unwrap_or(Backend::Auto);
     let backend = resolve_backend(
         requested_backend,
         &command,
@@ -55,7 +69,7 @@ fn build_runtime_with_env(
         term_is_dumb,
     );
 
-    let mut features = resolve_features(&profile, cli.mode, backend);
+    let mut features = resolve_features(&profile, selection.mode, backend);
     if !stdout_is_tty || term_is_dumb {
         features.remove(&Feature::Reveal);
         features.remove(&Feature::InlineAnimation);
@@ -67,36 +81,36 @@ fn build_runtime_with_env(
         features.remove(&Feature::LiveColor);
     }
 
-    let effect = cli
+    let effect = selection
         .effect
         .or(profile.effect)
         .unwrap_or_else(|| default_effect_for_backend(backend, &features));
 
-    let capture_ms = profile.capture_ms.unwrap_or(cli.capture_ms);
-    let duration_ms = profile.duration_ms.unwrap_or(cli.duration_ms);
-    let frames = profile.frames.unwrap_or(cli.frames).max(1);
+    let capture_ms = profile.capture_ms.unwrap_or(animation.capture_ms);
+    let duration_ms = profile.duration_ms.unwrap_or(animation.duration_ms);
+    let frames = profile.frames.unwrap_or(animation.frames).max(1);
     let live_render_duration_ms = profile
         .live_render_duration_ms
-        .unwrap_or(cli.live_render_duration_ms);
+        .unwrap_or(animation.live_render_duration_ms);
     let live_render_mouse_quiet_ms = profile
         .live_render_mouse_quiet_ms
-        .unwrap_or(cli.live_render_mouse_quiet_ms);
+        .unwrap_or(animation.live_render_mouse_quiet_ms);
     let animation_color_fade = profile
         .animation_color_fade
-        .unwrap_or(cli.animation_color_fade);
+        .unwrap_or(animation.animation_color_fade);
     let animation_color_darken_factor = profile
         .animation_color_darken_factor
-        .unwrap_or(cli.animation_color_darken_factor)
+        .unwrap_or(animation.animation_color_darken_factor)
         .clamp(0.0, 1.0);
 
-    let palette = profile.palette.unwrap_or(cli.palette);
+    let palette = profile.palette.unwrap_or(files.palette);
     let needs_theme = (backend == Backend::Tui
         && (features.contains(&Feature::Reveal)
             || features.contains(&Feature::LiveColor)
             || features.contains(&Feature::LiveRender)))
         || (backend == Backend::Cli && features.contains(&Feature::InlineAnimation));
     let theme = if needs_theme {
-        let theme_path = cli.theme_file.or(profile.theme_file);
+        let theme_path = files.theme_file.or(profile.theme_file);
         if let Some(path) = theme_path {
             read_theme(&path)
                 .with_context(|| format!("failed to read theme: {}", path.display()))?
@@ -109,7 +123,7 @@ fn build_runtime_with_env(
 
     let keymap = if features.contains(&Feature::Keymap) {
         let mut keymap_text = HashMap::new();
-        if let Some(path) = profile.keymap_file.or(cli.keymap_file) {
+        if let Some(path) = profile.keymap_file.or(files.keymap_file) {
             let km = read_keymap(&path)
                 .with_context(|| format!("failed to read keymap: {}", path.display()))?;
             keymap_text.extend(km.keymap);
@@ -120,9 +134,11 @@ fn build_runtime_with_env(
         HashMap::new()
     };
 
-    let max_lines = profile.max_lines.unwrap_or(cli.max_lines);
-    let max_bytes = profile.max_bytes.unwrap_or(cli.max_bytes);
-    let animate_over_limit = profile.animate_over_limit.unwrap_or(cli.animate_over_limit);
+    let max_lines = profile.max_lines.unwrap_or(cli_render.max_lines);
+    let max_bytes = profile.max_bytes.unwrap_or(cli_render.max_bytes);
+    let animate_over_limit = profile
+        .animate_over_limit
+        .unwrap_or(cli_render.animate_over_limit);
     let cli_animation_color = parse_optional_rgb(profile.cli_animation_color.as_deref())
         .context("invalid cli_animation_color")?;
     let cli_settled_color = parse_optional_rgb(profile.cli_settled_color.as_deref())
@@ -135,15 +151,23 @@ fn build_runtime_with_env(
         profile
             .highlight_color
             .as_deref()
-            .or(cli.highlight_color.as_deref()),
+            .or(highlight.highlight_color.as_deref()),
     )
     .context("invalid highlight_color")?;
     let highlight_rules = compile_highlight_rules(
-        &cli.highlight,
+        &highlight.highlight,
         &profile.highlight_rules,
         highlight_default_color,
     )
     .context("failed to compile highlight rules")?;
+    let output_transforms = compile_output_transform_rules(
+        &transform.replace,
+        &transform.mask,
+        &transform.mask_char,
+        &profile.replace_rules,
+        &profile.mask_rules,
+    )
+    .context("failed to compile output transform rules")?;
 
     Ok(Runtime {
         backend,
@@ -166,8 +190,9 @@ fn build_runtime_with_env(
         cli_settled_color,
         cli_gradient_start,
         cli_gradient_end,
-        no_theme_after_reveal: cli.no_theme_after_reveal,
+        no_theme_after_reveal: animation.no_theme_after_reveal,
         highlight_rules,
+        output_transforms,
     })
 }
 
@@ -214,6 +239,67 @@ fn compile_highlight_rules(
         });
     }
     Ok(rules)
+}
+
+fn compile_output_transform_rules(
+    cli_replace: &[String],
+    cli_mask: &[String],
+    cli_mask_char: &str,
+    profile_replace: &[ReplaceRuleConfig],
+    profile_mask: &[MaskRuleConfig],
+) -> Result<Vec<OutputTransformRule>> {
+    let mut rules = Vec::new();
+    let default_mask_char = parse_mask_char(cli_mask_char)?;
+
+    if !cli_replace.len().is_multiple_of(2) {
+        anyhow::bail!("--replace expects PATTERN TEXT pairs");
+    }
+    for pair in cli_replace.chunks_exact(2) {
+        let pattern = pair[0].clone();
+        let replacement = pair[1].clone();
+        rules.push(OutputTransformRule {
+            regex: Regex::new(&pattern)
+                .with_context(|| format!("invalid replace regex: {pattern}"))?,
+            kind: OutputTransformKind::Replace(replacement),
+        });
+    }
+
+    for pattern in cli_mask {
+        rules.push(OutputTransformRule {
+            regex: Regex::new(pattern).with_context(|| format!("invalid mask regex: {pattern}"))?,
+            kind: OutputTransformKind::Mask(default_mask_char),
+        });
+    }
+
+    for rule in profile_replace {
+        rules.push(OutputTransformRule {
+            regex: Regex::new(&rule.pattern)
+                .with_context(|| format!("invalid replace regex: {}", rule.pattern))?,
+            kind: OutputTransformKind::Replace(rule.replacement.clone()),
+        });
+    }
+
+    for rule in profile_mask {
+        let mask_char = parse_mask_char(rule.mask_char.as_deref().unwrap_or("*"))?;
+        rules.push(OutputTransformRule {
+            regex: Regex::new(&rule.pattern)
+                .with_context(|| format!("invalid mask regex: {}", rule.pattern))?,
+            kind: OutputTransformKind::Mask(mask_char),
+        });
+    }
+
+    Ok(rules)
+}
+
+fn parse_mask_char(value: &str) -> Result<char> {
+    let mut chars = value.chars();
+    let ch = chars
+        .next()
+        .with_context(|| "mask char must not be empty".to_string())?;
+    if chars.next().is_some() {
+        anyhow::bail!("mask char must be a single character");
+    }
+    Ok(ch)
 }
 
 fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
@@ -362,7 +448,10 @@ fn find_profile<'a>(config: &'a ConfigFile, command: &[OsString]) -> Option<&'a 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MatchSpec, Profile};
+    use crate::model::{
+        AnimationArgs, CliRenderArgs, FileArgs, HighlightArgs, MatchSpec, Profile, SelectionArgs,
+        TransformArgs,
+    };
     use std::{
         fs,
         path::PathBuf,
@@ -513,6 +602,37 @@ profiles:
     }
 
     #[test]
+    fn read_config_parses_replace_and_mask_rules() {
+        let path = unique_temp_file("baeru-transform-config.yml");
+        fs::write(
+            &path,
+            r##"
+profiles:
+  - name: sanitize
+    match:
+      command: env
+    backend: cli
+    replace_rules:
+      - pattern: "TOKEN=.*"
+        replacement: "TOKEN=[redacted]"
+    mask_rules:
+      - pattern: "(?i)password=.*"
+        mask_char: "#"
+"##,
+        )
+        .expect("fixture config should be written");
+
+        let config = read_config(&path).expect("config should parse");
+        let profile = &config.profiles[0];
+        assert_eq!(profile.replace_rules.len(), 1);
+        assert_eq!(profile.replace_rules[0].replacement, "TOKEN=[redacted]");
+        assert_eq!(profile.mask_rules.len(), 1);
+        assert_eq!(profile.mask_rules[0].mask_char.as_deref(), Some("#"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn build_runtime_with_env_applies_cli_profile_and_colors() {
         let config_path = unique_temp_file("baeru-runtime-config.yml");
         let theme_path = unique_temp_file("baeru-runtime-theme.yml");
@@ -560,26 +680,41 @@ profiles:
 
         let runtime = build_runtime_with_env(
             Cli {
-                backend: None,
-                mode: None,
-                effect: None,
-                config_file: Some(config_path.clone()),
-                theme_file: None,
-                palette: "jirai-pink".to_string(),
-                keymap_file: None,
-                capture_ms: 360,
-                duration_ms: 720,
-                frames: 24,
-                live_render_duration_ms: 90,
-                live_render_mouse_quiet_ms: 180,
-                animation_color_fade: false,
-                animation_color_darken_factor: 0.25,
-                max_lines: 200,
-                max_bytes: 1_000_000,
-                animate_over_limit: false,
-                highlight: vec![],
-                highlight_color: None,
-                no_theme_after_reveal: false,
+                selection: SelectionArgs {
+                    backend: None,
+                    mode: None,
+                    effect: None,
+                },
+                files: FileArgs {
+                    config_file: Some(config_path.clone()),
+                    theme_file: None,
+                    palette: "jirai-pink".to_string(),
+                    keymap_file: None,
+                },
+                animation: AnimationArgs {
+                    capture_ms: 360,
+                    duration_ms: 720,
+                    frames: 24,
+                    live_render_duration_ms: 90,
+                    live_render_mouse_quiet_ms: 180,
+                    animation_color_fade: false,
+                    animation_color_darken_factor: 0.25,
+                    no_theme_after_reveal: false,
+                },
+                cli_render: CliRenderArgs {
+                    max_lines: 200,
+                    max_bytes: 1_000_000,
+                    animate_over_limit: false,
+                },
+                highlight: HighlightArgs {
+                    highlight: vec![],
+                    highlight_color: None,
+                },
+                transform: TransformArgs {
+                    replace: vec![],
+                    mask: vec![],
+                    mask_char: "*".to_string(),
+                },
                 command: vec![OsString::from("ls")],
             },
             true,
@@ -617,26 +752,41 @@ profiles:
     fn build_runtime_with_env_disables_live_color_for_no_color() {
         let runtime = build_runtime_with_env(
             Cli {
-                backend: Some(Backend::Tui),
-                mode: Some(Mode::Reveal),
-                effect: None,
-                config_file: None,
-                theme_file: None,
-                palette: "jirai-pink".to_string(),
-                keymap_file: None,
-                capture_ms: 360,
-                duration_ms: 720,
-                frames: 24,
-                live_render_duration_ms: 90,
-                live_render_mouse_quiet_ms: 180,
-                animation_color_fade: false,
-                animation_color_darken_factor: 0.25,
-                max_lines: 200,
-                max_bytes: 1_000_000,
-                animate_over_limit: false,
-                highlight: vec![],
-                highlight_color: None,
-                no_theme_after_reveal: false,
+                selection: SelectionArgs {
+                    backend: Some(Backend::Tui),
+                    mode: Some(Mode::Reveal),
+                    effect: None,
+                },
+                files: FileArgs {
+                    config_file: None,
+                    theme_file: None,
+                    palette: "jirai-pink".to_string(),
+                    keymap_file: None,
+                },
+                animation: AnimationArgs {
+                    capture_ms: 360,
+                    duration_ms: 720,
+                    frames: 24,
+                    live_render_duration_ms: 90,
+                    live_render_mouse_quiet_ms: 180,
+                    animation_color_fade: false,
+                    animation_color_darken_factor: 0.25,
+                    no_theme_after_reveal: false,
+                },
+                cli_render: CliRenderArgs {
+                    max_lines: 200,
+                    max_bytes: 1_000_000,
+                    animate_over_limit: false,
+                },
+                highlight: HighlightArgs {
+                    highlight: vec![],
+                    highlight_color: None,
+                },
+                transform: TransformArgs {
+                    replace: vec![],
+                    mask: vec![],
+                    mask_char: "*".to_string(),
+                },
                 command: vec![OsString::from("htop")],
             },
             true,

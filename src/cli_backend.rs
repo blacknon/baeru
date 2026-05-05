@@ -3,6 +3,7 @@ use crate::{
     model::{EffectKind, Feature, Rgb, Runtime, CLI_SCRAMBLE},
     support::{env_flag, exit_with_status, print_raw_text, sleep_frame},
     theme::{darken, gradient, indexed_color, lerp},
+    transform::{apply_output_transforms, transform_line},
 };
 use anyhow::Result;
 use crossterm::terminal::size;
@@ -56,7 +57,10 @@ pub(crate) fn run_cli_backend(rt: Runtime) -> Result<()> {
         capture_command_text(&rt.command, stdout_is_tty)?
     };
 
-    let plain_lines = split_ansi_plain_lines_preserve_tail(&text);
+    let plain_lines = apply_output_transforms(
+        &split_ansi_plain_lines_preserve_tail(&text),
+        &rt.output_transforms,
+    );
     let evaluation = evaluate_lines(&plain_lines, &rt.highlight_rules);
     dispatch_cli_triggers(&evaluation.triggers, &text)?;
 
@@ -66,25 +70,29 @@ pub(crate) fn run_cli_backend(rt: Runtime) -> Result<()> {
         || text.is_empty()
     {
         if stdout_is_tty {
-            render_cli_without_animation(&text, &rt, &evaluation.colors)?;
+            render_cli_without_animation(&text, &rt, &plain_lines, &evaluation.colors)?;
         } else {
-            print_raw_text(&text)?;
+            if rt.output_transforms.is_empty() && rt.highlight_rules.is_empty() {
+                print_raw_text(&text)?;
+            } else {
+                render_cli_without_animation(&text, &rt, &plain_lines, &evaluation.colors)?;
+            }
         }
         exit_with_status(exit_code);
     }
 
     if text.len() > rt.max_bytes && !rt.animate_over_limit {
-        render_cli_without_animation(&text, &rt, &evaluation.colors)?;
+        render_cli_without_animation(&text, &rt, &plain_lines, &evaluation.colors)?;
         exit_with_status(exit_code);
     }
 
     if rt.effect == EffectKind::Plain {
-        render_cli_without_animation(&text, &rt, &evaluation.colors)?;
+        render_cli_without_animation(&text, &rt, &plain_lines, &evaluation.colors)?;
         exit_with_status(exit_code);
     }
 
     if !animate_cli_output(&text, &rt, &plain_lines, &evaluation.colors)? {
-        render_cli_without_animation(&text, &rt, &evaluation.colors)?;
+        render_cli_without_animation(&text, &rt, &plain_lines, &evaluation.colors)?;
     }
     exit_with_status(exit_code);
 }
@@ -96,7 +104,8 @@ fn animate_cli_output(
     highlight_colors: &[Vec<Option<Rgb>>],
 ) -> Result<bool> {
     if cli_preserves_source_ansi(rt) {
-        let styled_lines = split_ansi_lines_preserve_tail(text);
+        let styled_lines =
+            transform_styled_lines(&split_ansi_lines_preserve_tail(text), &rt.output_transforms);
         return animate_cli_styled_output(&styled_lines, rt, highlight_colors);
     }
 
@@ -226,11 +235,13 @@ fn animate_cli_styled_output(
 fn render_cli_without_animation(
     text: &str,
     rt: &Runtime,
+    plain_lines: &[String],
     highlight_colors: &[Vec<Option<Rgb>>],
 ) -> Result<()> {
     let mut stdout = io::stdout().lock();
     if cli_preserves_source_ansi(rt) {
-        let lines = split_ansi_lines_preserve_tail(text);
+        let lines =
+            transform_styled_lines(&split_ansi_lines_preserve_tail(text), &rt.output_transforms);
         for (line, highlights) in lines.iter().zip(highlight_colors) {
             write_cli_styled_line(
                 &mut stdout,
@@ -242,11 +253,10 @@ fn render_cli_without_animation(
             )?;
         }
     } else {
-        let lines = split_ansi_plain_lines_preserve_tail(text);
         let settled_fg = rt
             .cli_settled_color
             .unwrap_or_else(|| rt.theme.default_fg_rgb());
-        for (line, highlights) in lines.iter().zip(highlight_colors) {
+        for (line, highlights) in plain_lines.iter().zip(highlight_colors) {
             write_cli_colored_line(&mut stdout, line, highlights, settled_fg)?;
         }
     }
@@ -622,6 +632,30 @@ fn parse_extended_sgr_color(params: &[u16]) -> Option<(CliDisplayColor, usize)> 
 
 fn plain_line_from_styled(line: &[CliStyledChar]) -> String {
     line.iter().map(|cell| cell.ch).collect()
+}
+
+fn transform_styled_lines(
+    lines: &[Vec<CliStyledChar>],
+    rules: &[crate::model::OutputTransformRule],
+) -> Vec<Vec<CliStyledChar>> {
+    if rules.is_empty() {
+        return lines.to_vec();
+    }
+
+    lines
+        .iter()
+        .map(|line| {
+            let plain = plain_line_from_styled(line);
+            let transformed = transform_line(&plain, rules);
+            let mut out = line.to_vec();
+            for (idx, ch) in transformed.chars().enumerate() {
+                if let Some(cell) = out.get_mut(idx) {
+                    cell.ch = ch;
+                }
+            }
+            out
+        })
+        .collect()
 }
 
 fn cli_preserves_source_ansi(rt: &Runtime) -> bool {
@@ -1183,6 +1217,7 @@ mod tests {
             cli_gradient_end: None,
             no_theme_after_reveal: false,
             highlight_rules: Vec::new(),
+            output_transforms: Vec::new(),
         }
     }
 }

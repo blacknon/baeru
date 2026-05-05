@@ -98,14 +98,18 @@ cargo run -- -- ls -la
 Explicit examples:
 
 ```bash
-cargo run -- --mode reveal -- htop
-cargo run -- --mode color_live --theme-file examples/themes/jirai-pink.yml -- htop
-cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml --keymap-file examples/keymaps/htop-vim.yml -- htop
-cargo run -- --mode live_render --theme-file examples/themes/jirai-pink.yml -- htop
-cargo run -- --backend cli -- ls -la
-cargo run -- --backend cli -- git status
-cargo run -- --backend cli -e '(?i)error' -e 'timeout' -- journalctl -n 50
+cargo run -- -m reveal -- htop
+cargo run -- -m color_live -t examples/themes/jirai-pink.yml -- htop
+cargo run -- -m reveal -t examples/themes/jirai-pink.yml -k examples/keymaps/htop-vim.yml -- htop
+cargo run -- -m live_render -t examples/themes/jirai-pink.yml -- htop
+cargo run -- -b cli -- ls -la
+cargo run -- -b cli -- git status
+cargo run -- -b cli -e '(?i)error' -e 'timeout' -- journalctl -n 50
+cargo run -- -b cli -R '(?i)token=[A-Za-z0-9_]+' 'token=[redacted]' -- env
+cargo run -- -b cli -M '(?i)password=.*' -- sh -c 'printf \"password=hunter2\\n\"'
 ```
+
+Useful short options include `-b` for `--backend`, `-m` for `--mode`, `-E` for `--effect`, `-c` for `--config-file`, `-t` for `--theme-file`, and `-k` for `--keymap-file`.
 
 If no `--config-file` is given, `baeru` looks for config files in this order:
 
@@ -124,7 +128,7 @@ cargo run -- -- ls -la
 You can also point to a config explicitly:
 
 ```bash
-cargo run -- --config-file baeru.yml -- htop
+cargo run -- -c baeru.yml -- htop
 ```
 
 If no command is specified and stdin is a terminal, `htop` is used as the default PoC target:
@@ -140,8 +144,8 @@ cargo run
 For interactive terminal applications such as `htop` or `lazygit`.
 
 ```bash
-baeru --backend tui -- htop
-baeru --mode reveal -- htop
+baeru -b tui -- htop
+baeru -m reveal -- htop
 ```
 
 ### `cli`
@@ -149,9 +153,9 @@ baeru --mode reveal -- htop
 For ordinary commands such as `ls`, `df`, or `git status`.
 
 ```bash
-baeru --backend cli -- ls -la
-baeru --backend cli -- git status
-printf 'hello\nworld\n' | baeru --backend cli
+baeru -b cli -- ls -la
+baeru -b cli -- git status
+printf 'hello\nworld\n' | baeru -b cli
 ```
 
 ### `raw`
@@ -291,8 +295,50 @@ Triggered commands receive context through environment variables:
 - `BAERU_HIGHLIGHT_EVENT_JSON`
 - `BAERU_HIGHLIGHT_CAPTURE_PATH`
 - `BAERU_HIGHLIGHT_CAPTURE_KIND`
-- `fade`
-- `plain`
+
+## Replace and mask rules
+
+`baeru` can also rewrite visible output without changing the underlying application.
+
+CLI options:
+
+```bash
+baeru -b cli -R '(?i)token=[A-Za-z0-9_]+' 'token=[redacted]' -- env
+baeru -b cli -M '(?i)password=.*' -- sh -c 'printf "password=hunter2\n"'
+```
+
+- `-R`, `--replace <PATTERN> <TEXT>`
+  - regex-based visible replacement
+  - repeatable
+  - replacement is width-preserving
+  - if replacement is shorter than the matched text, it is padded with spaces
+  - if replacement is longer, only the leading characters are used
+- `-M`, `--mask <PATTERN>`
+  - regex-based masking
+  - repeatable
+- `--mask-char`
+  - masking character
+  - default is `*`
+
+Config example:
+
+```yaml
+profiles:
+  - name: fetch-safe
+    match:
+      command: neofetch
+    backend: cli
+    features:
+      - inline_animation
+    replace_rules:
+      - pattern: "Debian GNU/Linux"
+        replacement: "Distro"
+    mask_rules:
+      - pattern: "(?i)kernel: .*"
+        mask_char: "#"
+```
+
+These transforms are applied to CLI output and to TUI rendering paths such as `reveal` and `live_render`.
 
 ```bash
 baeru --backend cli --effect coalesce -- ls -la

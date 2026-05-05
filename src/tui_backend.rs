@@ -10,6 +10,7 @@ use crate::{
     },
     support::{exit_with_status, sleep_frame, spawn_direct},
     theme::{darken, lerp, SgrRewriter},
+    transform::transform_line,
 };
 use anyhow::{anyhow, Result};
 use crossterm::{
@@ -96,7 +97,8 @@ fn run_live_render(rt: Runtime) -> Result<()> {
     }
 
     let emulate_alt_screen = contains_alt_screen_enter_sequence(&captured);
-    let initial_screen = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
+    let mut initial_screen = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
+    apply_transforms_to_cells(&mut initial_screen, &rt.output_transforms);
     let initial_state = collect_terminal_state(parser.screen(), rows, cols);
     let initial_lines = screen_lines(&initial_screen);
     let initial_highlights = evaluate_lines(&initial_lines, &rt.highlight_rules);
@@ -190,7 +192,8 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                 }
                 passthrough.feed(&mut stdout, &buf[..n])?;
                 parser.process(&buf[..n]);
-                let current = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
+                let mut current = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
+                apply_transforms_to_cells(&mut current, &rt.output_transforms);
                 let current_lines = screen_lines(&current);
                 let current_highlights = evaluate_lines(&current_lines, &rt.highlight_rules);
                 let new_triggers =
@@ -358,7 +361,8 @@ fn run_reveal(rt: Runtime) -> Result<()> {
     } else {
         Some(rt.theme.clone())
     };
-    let screen = collect_screen(parser.screen(), rows, cols, theme.as_ref());
+    let mut screen = collect_screen(parser.screen(), rows, cols, theme.as_ref());
+    apply_transforms_to_cells(&mut screen, &rt.output_transforms);
     let highlight_eval = evaluate_lines(&screen_lines(&screen), &rt.highlight_rules);
     dispatch_tui_triggers(
         &highlight_eval.triggers,
@@ -1050,6 +1054,31 @@ fn screen_lines(cells: &[Vec<StyledCell>]) -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+fn apply_transforms_to_cells(
+    cells: &mut [Vec<StyledCell>],
+    rules: &[crate::model::OutputTransformRule],
+) {
+    if rules.is_empty() {
+        return;
+    }
+
+    for row in cells.iter_mut() {
+        let visible_indexes = row
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, cell)| (!cell.wide_continuation).then_some(idx))
+            .collect::<Vec<_>>();
+        let plain = visible_indexes
+            .iter()
+            .map(|&idx| row[idx].text.as_str())
+            .collect::<String>();
+        let transformed = transform_line(&plain, rules);
+        for (cell_idx, ch) in visible_indexes.into_iter().zip(transformed.chars()) {
+            row[cell_idx].text = ch.to_string();
+        }
+    }
 }
 
 fn maybe_dispatch_passthrough_highlights(

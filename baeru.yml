@@ -127,6 +127,12 @@ profiles:
     live_render_mouse_quiet_ms: 280
     duration_ms: 900
     frames: 18
+    replace_rules:
+      - pattern: "Debian GNU/Linux"
+        replacement: "Distro"
+    mask_rules:
+      - pattern: "(?i)kernel: .*"
+        mask_char: "#"
 
   - name: htop-live-render-experimental
     match:
