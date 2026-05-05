@@ -12,5 +12,5 @@ pub(super) use self::screen::{
     detect_scroll_hint, diff_screen, display_vt_color, full_screen_changed,
     maybe_dispatch_passthrough_highlights, no_screen_changed, row_has_changes, screen_lines,
     screen_to_svg, theme_preserves_terminal_colors, DisplayColor, LiveRenderScene, ScrollHint,
-    StyledCell,
+    StyledCell, TerminalState,
 };

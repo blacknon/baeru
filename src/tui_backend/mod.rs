@@ -20,6 +20,28 @@ use std::{
     time::{Duration, Instant},
 };
 
+struct InitialLiveRenderCapture {
+    rows: u16,
+    cols: u16,
+    parser: vt100::Parser,
+    captured: Vec<u8>,
+    initial_screen: Vec<Vec<StyledCell>>,
+    initial_state: TerminalState,
+    initial_highlights: crate::highlight::HighlightEvaluation,
+    trigger_state: crate::highlight::TriggerState,
+    emulate_alt_screen: bool,
+}
+
+struct LiveRenderRuntimeState {
+    cols: u16,
+    rows: u16,
+    parser: vt100::Parser,
+    passthrough: LivePassthrough,
+    prev: Option<Vec<Vec<StyledCell>>>,
+    frame: usize,
+    trigger_state: crate::highlight::TriggerState,
+}
+
 pub(crate) fn run_tui_backend(rt: Runtime) -> Result<()> {
     if rt.features.contains(&Feature::LiveRender) {
         return run_live_render(rt);
@@ -61,14 +83,66 @@ fn run_splash(rt: Runtime) -> Result<()> {
 }
 
 fn run_live_render(rt: Runtime) -> Result<()> {
-    let (mut cols, mut rows) = size().unwrap_or((80, 24));
+    let (cols, rows) = size().unwrap_or((80, 24));
     let mut session = PtySession::spawn(&rt.command, rows, cols)?;
+    let initial = capture_initial_live_render_state(&rt, &mut session.reader, rows, cols)?;
+
+    let _guard = TerminalGuard::enter(true)?;
+    let mut stdout = io::stdout();
+    if initial.emulate_alt_screen {
+        execute!(stdout, EnterAlternateScreen)?;
+    }
+    let _signal_cleanup = SignalCleanupWatcher::spawn(SignalCleanupConfig {
+        leave_alt_screen: true,
+        reset_live_sequences: true,
+    });
+    let mut runtime_state = render_initial_live_frame(&rt, &mut stdout, initial)?;
+
+    let mouse_quiet_window = Duration::from_millis(rt.live_render_mouse_quiet_ms);
+    let writer = Arc::new(Mutex::new(session.writer));
+    let mouse_activity = Arc::new(Mutex::new(None));
+    let _input_handle = spawn_input_forwarder(
+        writer.clone(),
+        rt.keymap.clone(),
+        Some(mouse_activity.clone()),
+    );
+    let mut buf = [0u8; 8192];
+
+    loop {
+        match session.reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                process_live_render_chunk(
+                    &rt,
+                    &mut stdout,
+                    &mut runtime_state,
+                    &buf[..n],
+                    &mouse_activity,
+                    mouse_quiet_window,
+                )?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    let status = session.child.wait()?;
+    reset_live_passthrough_sequences(&mut stdout)?;
+    exit_with_status(status.exit_code() as i32);
+}
+
+fn capture_initial_live_render_state(
+    rt: &Runtime,
+    reader: &mut Box<dyn Read + Send>,
+    rows: u16,
+    cols: u16,
+) -> Result<InitialLiveRenderCapture> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let mut buf = [0u8; 8192];
     let deadline = Instant::now() + Duration::from_millis(rt.capture_ms);
     let mut captured = Vec::new();
     while Instant::now() < deadline {
-        match session.reader.read(&mut buf) {
+        match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 parser.process(&buf[..n]);
@@ -83,8 +157,8 @@ fn run_live_render(rt: Runtime) -> Result<()> {
     let mut initial_screen = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
     apply_transforms_to_cells(&mut initial_screen, &rt.output_transforms);
     let initial_state = collect_terminal_state(parser.screen(), rows, cols);
-    let initial_lines = screen_lines(&initial_screen);
-    let initial_highlights = crate::highlight::evaluate_lines(&initial_lines, &rt.highlight_rules);
+    let initial_highlights =
+        crate::highlight::evaluate_lines(&screen_lines(&initial_screen), &rt.highlight_rules);
     let mut trigger_state = crate::highlight::TriggerState::default();
     let new_triggers = crate::highlight::filter_new_triggers(
         &mut trigger_state,
@@ -98,20 +172,29 @@ fn run_live_render(rt: Runtime) -> Result<()> {
         )),
     )?;
 
-    let _guard = TerminalGuard::enter(true)?;
-    let mut stdout = io::stdout();
-    if emulate_alt_screen {
-        execute!(stdout, EnterAlternateScreen)?;
-    }
-    let _signal_cleanup = SignalCleanupWatcher::spawn(SignalCleanupConfig {
-        leave_alt_screen: true,
-        reset_live_sequences: true,
-    });
-    animate_styled_reveal_in_place(
-        &initial_screen,
-        Some(&initial_highlights.colors),
+    Ok(InitialLiveRenderCapture {
         rows,
         cols,
+        parser,
+        captured,
+        initial_screen,
+        initial_state,
+        initial_highlights,
+        trigger_state,
+        emulate_alt_screen,
+    })
+}
+
+fn render_initial_live_frame(
+    rt: &Runtime,
+    stdout: &mut io::Stdout,
+    initial: InitialLiveRenderCapture,
+) -> Result<LiveRenderRuntimeState> {
+    animate_styled_reveal_in_place(
+        &initial.initial_screen,
+        Some(&initial.initial_highlights.colors),
+        initial.rows,
+        initial.cols,
         RevealTuning {
             frames: rt.frames,
             duration_ms: rt.duration_ms,
@@ -121,13 +204,13 @@ fn run_live_render(rt: Runtime) -> Result<()> {
         },
     )?;
     let mut passthrough = LivePassthrough::default();
-    passthrough.feed(&mut stdout, &captured)?;
+    passthrough.feed(stdout, &initial.captured)?;
     draw_live_screen(
-        &mut stdout,
+        stdout,
         LiveRenderScene {
-            cells: &initial_screen,
-            state: &initial_state,
-            highlight_colors: Some(&initial_highlights.colors),
+            cells: &initial.initial_screen,
+            state: &initial.initial_state,
+            highlight_colors: Some(&initial.initial_highlights.colors),
             theme: &rt.theme,
         },
         LiveRenderTuning {
@@ -142,102 +225,117 @@ fn run_live_render(rt: Runtime) -> Result<()> {
             ratio: 1.0,
         },
         RedrawMasks {
-            redraw: &full_screen_changed(&initial_screen),
-            highlight: &no_screen_changed(&initial_screen),
+            redraw: &full_screen_changed(&initial.initial_screen),
+            highlight: &no_screen_changed(&initial.initial_screen),
         },
     )?;
 
-    let mouse_quiet_window = Duration::from_millis(rt.live_render_mouse_quiet_ms);
-    let writer = Arc::new(Mutex::new(session.writer));
-    let mouse_activity = Arc::new(Mutex::new(None));
-    let _input_handle = spawn_input_forwarder(
-        writer.clone(),
-        rt.keymap.clone(),
-        Some(mouse_activity.clone()),
-    );
+    Ok(LiveRenderRuntimeState {
+        cols: initial.cols,
+        rows: initial.rows,
+        parser: initial.parser,
+        passthrough,
+        prev: Some(initial.initial_screen),
+        frame: 0,
+        trigger_state: initial.trigger_state,
+    })
+}
 
-    let mut prev: Option<Vec<Vec<StyledCell>>> = Some(initial_screen);
-    let mut frame = 0usize;
-
-    loop {
-        match session.reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                if let Ok((new_cols, new_rows)) = size() {
-                    if new_cols != cols || new_rows != rows {
-                        cols = new_cols;
-                        rows = new_rows;
-                        parser = vt100::Parser::new(rows, cols, 0);
-                        prev = None;
-                        execute!(
-                            stdout,
-                            Clear(ClearType::All),
-                            crossterm::cursor::MoveTo(0, 0)
-                        )?;
-                    }
-                }
-                passthrough.feed(&mut stdout, &buf[..n])?;
-                parser.process(&buf[..n]);
-                let mut current = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
-                apply_transforms_to_cells(&mut current, &rt.output_transforms);
-                let current_lines = screen_lines(&current);
-                let current_highlights =
-                    crate::highlight::evaluate_lines(&current_lines, &rt.highlight_rules);
-                let new_triggers = crate::highlight::filter_new_triggers(
-                    &mut trigger_state,
-                    current_highlights.triggers.clone(),
-                );
-                crate::highlight::dispatch_tui_triggers(
-                    &new_triggers,
-                    Some(&screen_to_svg(&current, Some(&current_highlights.colors))),
-                )?;
-                let state = collect_terminal_state(parser.screen(), rows, cols);
-                let scroll_hint =
-                    detect_scroll_hint(prev.as_ref(), &current, rows as usize, cols as usize);
-                let mut changed =
-                    diff_screen(prev.as_ref(), &current, rows as usize, cols as usize);
-                apply_scroll_hint(&mut changed, scroll_hint, rows as usize, cols as usize);
-                animate_live_render_update(
-                    &mut stdout,
-                    LiveRenderScene {
-                        cells: &current,
-                        state: &state,
-                        highlight_colors: Some(&current_highlights.colors),
-                        theme: &rt.theme,
-                    },
-                    LiveRenderFrame {
-                        scroll_hint,
-                        effect: if passthrough.mouse_reporting_active
-                            && mouse_activity_recent(&mouse_activity, mouse_quiet_window)
-                        {
-                            EffectKind::Plain
-                        } else {
-                            rt.effect
-                        },
-                        frame,
-                        ratio: 1.0,
-                    },
-                    LiveRenderTuning {
-                        duration_ms: rt.live_render_duration_ms,
-                        color_fade: rt.animation_color_fade,
-                        darken_factor: rt.animation_color_darken_factor,
-                    },
-                    RedrawMasks {
-                        redraw: &changed,
-                        highlight: &changed,
-                    },
-                )?;
-                prev = Some(current);
-                frame = frame.wrapping_add(1);
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+fn process_live_render_chunk(
+    rt: &Runtime,
+    stdout: &mut io::Stdout,
+    state: &mut LiveRenderRuntimeState,
+    chunk: &[u8],
+    mouse_activity: &Arc<Mutex<Option<Instant>>>,
+    mouse_quiet_window: Duration,
+) -> Result<()> {
+    if let Ok((new_cols, new_rows)) = size() {
+        if new_cols != state.cols || new_rows != state.rows {
+            state.cols = new_cols;
+            state.rows = new_rows;
+            state.parser = vt100::Parser::new(state.rows, state.cols, 0);
+            state.prev = None;
+            execute!(
+                stdout,
+                Clear(ClearType::All),
+                crossterm::cursor::MoveTo(0, 0)
+            )?;
         }
     }
 
-    let status = session.child.wait()?;
-    reset_live_passthrough_sequences(&mut stdout)?;
-    exit_with_status(status.exit_code() as i32);
+    state.passthrough.feed(stdout, chunk)?;
+    state.parser.process(chunk);
+
+    let mut current = collect_screen(
+        state.parser.screen(),
+        state.rows,
+        state.cols,
+        Some(&rt.theme),
+    );
+    apply_transforms_to_cells(&mut current, &rt.output_transforms);
+    let current_lines = screen_lines(&current);
+    let current_highlights = crate::highlight::evaluate_lines(&current_lines, &rt.highlight_rules);
+    let new_triggers = crate::highlight::filter_new_triggers(
+        &mut state.trigger_state,
+        current_highlights.triggers.clone(),
+    );
+    crate::highlight::dispatch_tui_triggers(
+        &new_triggers,
+        Some(&screen_to_svg(&current, Some(&current_highlights.colors))),
+    )?;
+    let terminal_state = collect_terminal_state(state.parser.screen(), state.rows, state.cols);
+    let scroll_hint = detect_scroll_hint(
+        state.prev.as_ref(),
+        &current,
+        state.rows as usize,
+        state.cols as usize,
+    );
+    let mut changed = diff_screen(
+        state.prev.as_ref(),
+        &current,
+        state.rows as usize,
+        state.cols as usize,
+    );
+    apply_scroll_hint(
+        &mut changed,
+        scroll_hint,
+        state.rows as usize,
+        state.cols as usize,
+    );
+    animate_live_render_update(
+        stdout,
+        LiveRenderScene {
+            cells: &current,
+            state: &terminal_state,
+            highlight_colors: Some(&current_highlights.colors),
+            theme: &rt.theme,
+        },
+        LiveRenderFrame {
+            scroll_hint,
+            effect: if state.passthrough.mouse_reporting_active
+                && mouse_activity_recent(mouse_activity, mouse_quiet_window)
+            {
+                EffectKind::Plain
+            } else {
+                rt.effect
+            },
+            frame: state.frame,
+            ratio: 1.0,
+        },
+        LiveRenderTuning {
+            duration_ms: rt.live_render_duration_ms,
+            color_fade: rt.animation_color_fade,
+            darken_factor: rt.animation_color_darken_factor,
+        },
+        RedrawMasks {
+            redraw: &changed,
+            highlight: &changed,
+        },
+    )?;
+
+    state.prev = Some(current);
+    state.frame = state.frame.wrapping_add(1);
+    Ok(())
 }
 
 fn animate_live_render_update(
