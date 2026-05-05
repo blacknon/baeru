@@ -53,6 +53,7 @@ pub(crate) enum EffectKind {
     Glitch,
     Matrix,
     Scanline,
+    Scatter,
     Sweep,
     Wipe,
     Fade,
@@ -236,7 +237,9 @@ pub(crate) const LIVE_RENDER_MOUSE_ENABLE_SEQUENCES: &[&[u8]] = &[
     b"\x1b[?1000h",
     b"\x1b[?1002h",
     b"\x1b[?1003h",
+    b"\x1b[?1005h",
     b"\x1b[?1006h",
+    b"\x1b[?1007h",
     b"\x1b[?1015h",
 ];
 
@@ -244,7 +247,9 @@ pub(crate) const LIVE_RENDER_MOUSE_DISABLE_SEQUENCES: &[&[u8]] = &[
     b"\x1b[?1000l",
     b"\x1b[?1002l",
     b"\x1b[?1003l",
+    b"\x1b[?1005l",
     b"\x1b[?1006l",
+    b"\x1b[?1007l",
     b"\x1b[?1015l",
 ];
 
@@ -257,4 +262,4 @@ pub(crate) const LIVE_RENDER_PASTE_MODE_ENABLE_SEQUENCES: &[&[u8]] = &[b"\x1b[?2
 pub(crate) const LIVE_RENDER_PASTE_MODE_DISABLE_SEQUENCES: &[&[u8]] = &[b"\x1b[?2004l"];
 
 pub(crate) const LIVE_RENDER_RESET_SEQUENCES: &[u8] =
-    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1l\x1b>\x1b[?2004l";
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1007l\x1b[?1015l\x1b[?1l\x1b>\x1b[?2004l";

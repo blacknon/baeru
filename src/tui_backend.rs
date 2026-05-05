@@ -282,6 +282,7 @@ fn live_render_effect_ratios(effect: EffectKind) -> &'static [f32] {
         EffectKind::Glitch => &[0.08, 0.16, 0.32, 0.55, 1.0],
         EffectKind::Matrix => &[0.08, 0.24, 0.45, 0.72, 1.0],
         EffectKind::Scanline => &[0.12, 0.35, 0.68, 1.0],
+        EffectKind::Scatter => &[0.1, 0.28, 0.58, 1.0],
     }
 }
 
@@ -402,6 +403,9 @@ impl PtySession {
         let mut cmd = CommandBuilder::new(&command[0]);
         for arg in &command[1..] {
             cmd.arg(arg);
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            cmd.cwd(cwd);
         }
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
@@ -1169,6 +1173,16 @@ fn reveal_text_for_cell(
                 reveal_noise_symbol(row, col, frame)
             }
         }
+        EffectKind::Scatter => {
+            let threshold = pseudo_random_01(row as u64 + 97, col as u64 + 193);
+            if ratio >= threshold {
+                &cell.text
+            } else if ratio + 0.12 >= threshold && !cell.text.trim().is_empty() {
+                reveal_noise_symbol(row, col, frame)
+            } else {
+                " "
+            }
+        }
     }
 }
 
@@ -1405,6 +1419,16 @@ fn live_render_text_for_cell(cell: &StyledCell, ctx: CellAnimCtx) -> String {
                 cell.text.clone()
             } else {
                 reveal_noise_symbol(ctx.row, ctx.col, ctx.frame).to_string()
+            }
+        }
+        EffectKind::Scatter => {
+            let threshold = pseudo_random_01(ctx.row as u64 + 97, ctx.col as u64 + 193);
+            if ctx.ratio >= threshold || (ctx.color_fade && ctx.ratio + 0.08 >= threshold) {
+                cell.text.clone()
+            } else if ctx.ratio + 0.16 >= threshold {
+                reveal_noise_symbol(ctx.row, ctx.col, ctx.frame).to_string()
+            } else {
+                " ".to_string()
             }
         }
     }
@@ -1659,6 +1683,23 @@ fn coalesce_text(text: &str, ratio: f32, effect: EffectKind) -> String {
                     .collect()
             }
         }
+        EffectKind::Scatter => text
+            .chars()
+            .enumerate()
+            .map(|(idx, ch)| {
+                if ch.is_whitespace() {
+                    return ch;
+                }
+                let threshold = pseudo_random_01(idx as u64 + 97, text.len() as u64 + 193);
+                if ratio >= threshold {
+                    ch
+                } else if ratio + 0.12 >= threshold {
+                    ['.', ':', '+', '*', '#', '%', '@'][(idx + (ratio * 100.0) as usize) % 7]
+                } else {
+                    ' '
+                }
+            })
+            .collect(),
     }
 }
 
@@ -1779,7 +1820,9 @@ mod tests {
         let mut passthrough = LivePassthrough::default();
         let mut out = Vec::new();
 
-        passthrough.feed(&mut out, b"\x1b[?10").expect("feed should work");
+        passthrough
+            .feed(&mut out, b"\x1b[?10")
+            .expect("feed should work");
         assert!(!passthrough.mouse_reporting_active);
         passthrough
             .feed(&mut out, b"00h")
@@ -1849,6 +1892,10 @@ mod tests {
         assert_eq!(
             live_render_effect_ratios(EffectKind::Scanline),
             &[0.12, 0.35, 0.68, 1.0]
+        );
+        assert_eq!(
+            live_render_effect_ratios(EffectKind::Scatter),
+            &[0.1, 0.28, 0.58, 1.0]
         );
     }
 
@@ -1952,6 +1999,17 @@ mod tests {
         let late = reveal_text_for_cell(&cell, 0, 0, 1, 3, 1.0, EffectKind::Fade);
 
         assert_eq!(early, "X");
+        assert_eq!(late, "X");
+    }
+
+    #[test]
+    fn reveal_scatter_settles_from_random_position_order() {
+        let cell = cell_with("X", &StyledCell::blank(None));
+
+        let early = reveal_text_for_cell(&cell, 0, 0, 2, 0, 0.0, EffectKind::Scatter);
+        let late = reveal_text_for_cell(&cell, 0, 0, 2, 3, 1.0, EffectKind::Scatter);
+
+        assert_ne!(early, "X");
         assert_eq!(late, "X");
     }
 

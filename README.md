@@ -172,6 +172,7 @@ For plain passthrough behavior without added effects.
 | CLI | `inline_animation` + `glitch` | inline animation | stable PoC | flickery noisy instability that settles quickly |
 | CLI | `inline_animation` + `matrix` | inline animation | stable PoC | column-biased digital-rain style convergence |
 | CLI | `inline_animation` + `scanline` | inline animation | stable PoC | moving scan band reveals text as it passes |
+| CLI | `inline_animation` + `scatter` | inline animation | stable PoC | randomized positions settle into place across the screen |
 | CLI | `inline_animation` + `sweep` | inline animation | stable PoC | left-to-right reveal |
 | CLI | `inline_animation` + `wipe` | inline animation | stable PoC | diagonal wipe from sparse to full text |
 | CLI | `inline_animation` + `fade` | inline animation | stable PoC | delayed text appearance |
@@ -225,12 +226,16 @@ Rewrites key input per command using YAML-defined mapping rules.
 
 Animates CLI output inline below the prompt.
 
+- theme / CLI color overrideなし: 元の ANSI 色を保持したままアニメーション
+- themeあり、または CLI 色指定あり: `baeru` 側で再着色
+
 Supported effects:
 
 - `coalesce`
 - `glitch`
 - `matrix`
 - `scanline`
+- `scatter`
 - `sweep`
 - `wipe`
 - `fade`
@@ -271,7 +276,7 @@ Current improvements include:
 - cursor visibility / cursor position restoration
 - PTY resize propagation and parser recreation on terminal resize
 - mouse / cursor-mode / bracketed-paste passthrough for better input fidelity
-- short live update animation with `coalesce` / `glitch` / `matrix` / `scanline` / `sweep` / `wipe` / `fade` / `plain`
+- short live update animation with `coalesce` / `glitch` / `matrix` / `scanline` / `scatter` / `sweep` / `wipe` / `fade` / `plain`
 
 Recommended profile-style tuning:
 
