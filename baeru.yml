@@ -152,3 +152,4 @@ profiles:
         pattern: "(?i)load average|running"
         color: "#ffff00"
         capture_tui_screenshot: true
+        output_prefix: "htop-{capture_kind}-"

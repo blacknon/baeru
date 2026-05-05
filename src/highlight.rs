@@ -26,6 +26,7 @@ pub(crate) struct HighlightTrigger {
     pub(crate) capture_cli_text: bool,
     pub(crate) capture_tui_screenshot: bool,
     pub(crate) output_dir: Option<PathBuf>,
+    pub(crate) output_prefix: Option<String>,
     pub(crate) fingerprint: u64,
 }
 
@@ -73,6 +74,7 @@ pub(crate) fn evaluate_lines(lines: &[String], rules: &[HighlightRule]) -> Highl
                 capture_cli_text: rule.capture_cli_text,
                 capture_tui_screenshot: rule.capture_tui_screenshot,
                 output_dir: rule.output_dir.clone(),
+                output_prefix: rule.output_prefix.clone(),
                 fingerprint: fingerprint(&rule.key, &matched_texts),
             });
         }
@@ -105,7 +107,9 @@ pub(crate) fn dispatch_cli_triggers(triggers: &[HighlightTrigger], full_text: &s
         let capture_path = if trigger.capture_cli_text {
             Some(write_capture_file(
                 &output_dir,
-                &trigger.key,
+                trigger,
+                "cli",
+                "cli_text",
                 "txt",
                 full_text.as_bytes(),
             )?)
@@ -126,7 +130,16 @@ pub(crate) fn dispatch_tui_triggers(
         let output_dir = ensure_output_dir(trigger.output_dir.as_deref())?;
         let capture_path = if trigger.capture_tui_screenshot {
             screenshot_svg
-                .map(|svg| write_capture_file(&output_dir, &trigger.key, "svg", svg.as_bytes()))
+                .map(|svg| {
+                    write_capture_file(
+                        &output_dir,
+                        trigger,
+                        "tui",
+                        "tui_svg",
+                        "svg",
+                        svg.as_bytes(),
+                    )
+                })
                 .transpose()?
         } else {
             None
@@ -182,20 +195,27 @@ fn run_trigger_command(
 fn ensure_output_dir(specified: Option<&Path>) -> Result<PathBuf> {
     let dir = match specified {
         Some(path) => path.to_path_buf(),
-        None => std::env::current_dir()?
-            .join("tmp")
-            .join("baeru-artifacts"),
+        None => std::env::current_dir()?.join("tmp").join("baeru-artifacts"),
     };
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
-fn write_capture_file(dir: &Path, key: &str, ext: &str, bytes: &[u8]) -> Result<PathBuf> {
-    let path = dir.join(format!(
-        "{}-{}.{}",
-        sanitize_key(key),
-        timestamp_suffix(),
-        ext
+fn write_capture_file(
+    dir: &Path,
+    trigger: &HighlightTrigger,
+    backend: &str,
+    capture_kind: &str,
+    ext: &str,
+    bytes: &[u8],
+) -> Result<PathBuf> {
+    let suffix = timestamp_suffix();
+    let path = dir.join(format_output_filename(
+        trigger,
+        backend,
+        capture_kind,
+        ext,
+        suffix,
     ));
     fs::write(&path, bytes)?;
     Ok(path)
@@ -207,6 +227,7 @@ fn write_manifest(
     trigger: &HighlightTrigger,
     capture_path: Option<&Path>,
 ) -> Result<PathBuf> {
+    let suffix = timestamp_suffix();
     let manifest = TriggerManifest {
         backend,
         key: &trigger.key,
@@ -221,18 +242,92 @@ fn write_manifest(
         }),
         capture_path: capture_path.map(|path| path.display().to_string()),
     };
-    let path = dir.join(format!(
-        "{}-{}-event.json",
-        sanitize_key(&trigger.key),
-        timestamp_suffix()
+    let path = dir.join(format_output_filename(
+        trigger, backend, "event", "json", suffix,
     ));
     fs::write(&path, serde_json::to_vec_pretty(&manifest)?)?;
     Ok(path)
 }
 
+fn format_output_filename(
+    trigger: &HighlightTrigger,
+    backend: &str,
+    capture_kind: &str,
+    ext: &str,
+    timestamp: u128,
+) -> String {
+    let prefix = render_output_prefix(trigger, backend, capture_kind, ext, timestamp);
+    let base = match capture_kind {
+        "event" => format!("{}-{}-event", sanitize_key(&trigger.key), timestamp),
+        _ => format!("{}-{}", sanitize_key(&trigger.key), timestamp),
+    };
+    format!("{prefix}{base}.{ext}")
+}
+
+fn render_output_prefix(
+    trigger: &HighlightTrigger,
+    backend: &str,
+    capture_kind: &str,
+    ext: &str,
+    timestamp: u128,
+) -> String {
+    let Some(template) = trigger.output_prefix.as_deref() else {
+        return String::new();
+    };
+
+    let mut rendered = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '{' {
+            rendered.push(ch);
+            continue;
+        }
+
+        let mut token = String::new();
+        let mut closed = false;
+        while let Some(next) = chars.next() {
+            if next == '}' {
+                closed = true;
+                break;
+            }
+            token.push(next);
+        }
+
+        if !closed {
+            rendered.push('{');
+            rendered.push_str(&token);
+            break;
+        }
+
+        match token.as_str() {
+            "key" => rendered.push_str(&sanitize_key(&trigger.key)),
+            "backend" => rendered.push_str(backend),
+            "capture_kind" => rendered.push_str(capture_kind),
+            "ext" => rendered.push_str(ext),
+            "timestamp" => rendered.push_str(&timestamp.to_string()),
+            token if token.starts_with("env:") => {
+                if let Ok(value) = std::env::var(&token[4..]) {
+                    rendered.push_str(&sanitize_segment(&value));
+                }
+            }
+            _ => {
+                rendered.push('{');
+                rendered.push_str(&token);
+                rendered.push('}');
+            }
+        }
+    }
+
+    sanitize_segment(&rendered)
+}
+
 fn sanitize_key(key: &str) -> String {
-    let mut out = String::with_capacity(key.len());
-    for ch in key.chars() {
+    sanitize_segment(key)
+}
+
+fn sanitize_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
             out.push(ch);
         } else {
@@ -282,7 +377,73 @@ mod tests {
             capture_tui_screenshot: false,
             capture_cli_text: false,
             output_dir: None,
+            output_prefix: None,
         }
+    }
+
+    #[test]
+    fn format_output_filename_keeps_default_when_prefix_is_missing() {
+        let trigger = HighlightTrigger {
+            key: "error".to_string(),
+            pattern: "error".to_string(),
+            matched_texts: vec!["error".to_string()],
+            command: None,
+            capture_cli_text: true,
+            capture_tui_screenshot: false,
+            output_dir: None,
+            output_prefix: None,
+            fingerprint: 1,
+        };
+
+        assert_eq!(
+            format_output_filename(&trigger, "cli", "cli_text", "txt", 1234),
+            "error-1234.txt"
+        );
+        assert_eq!(
+            format_output_filename(&trigger, "cli", "event", "json", 1234),
+            "error-1234-event.json"
+        );
+    }
+
+    #[test]
+    fn format_output_filename_renders_template_variables_in_prefix() {
+        let trigger = HighlightTrigger {
+            key: "error/fatal".to_string(),
+            pattern: "error".to_string(),
+            matched_texts: vec!["error".to_string()],
+            command: None,
+            capture_cli_text: true,
+            capture_tui_screenshot: false,
+            output_dir: None,
+            output_prefix: Some("run-{backend}-{capture_kind}-{key}-{timestamp}-".to_string()),
+            fingerprint: 1,
+        };
+
+        assert_eq!(
+            format_output_filename(&trigger, "cli", "cli_text", "txt", 1234),
+            "run-cli-cli_text-error_fatal-1234-error_fatal-1234.txt"
+        );
+    }
+
+    #[test]
+    fn render_output_prefix_supports_env_variables() {
+        let trigger = HighlightTrigger {
+            key: "warn".to_string(),
+            pattern: "warn".to_string(),
+            matched_texts: vec!["warn".to_string()],
+            command: None,
+            capture_cli_text: true,
+            capture_tui_screenshot: false,
+            output_dir: None,
+            output_prefix: Some("job-{env:BAERU_TEST_PREFIX}-".to_string()),
+            fingerprint: 1,
+        };
+
+        std::env::set_var("BAERU_TEST_PREFIX", "nightly build");
+        let rendered = render_output_prefix(&trigger, "cli", "cli_text", "txt", 1234);
+        std::env::remove_var("BAERU_TEST_PREFIX");
+
+        assert_eq!(rendered, "job-nightly_build-");
     }
 
     #[test]

@@ -269,6 +269,10 @@ baeru --backend cli -e '(?i)error' --highlight-capture-cli-text --highlight-comm
   - save a TUI SVG screenshot when a CLI-defined highlight matches
 - `--highlight-output-dir`
   - output directory for CLI-defined highlight captures and manifests
+- `--highlight-output-prefix`
+  - filename prefix template for CLI-defined highlight captures and manifests
+  - supported tokens: `{key}`, `{backend}`, `{capture_kind}`, `{ext}`, `{timestamp}`, `{env:NAME}`
+  - rendered values are sanitized to safe filename characters
 
 Config example:
 
@@ -286,7 +290,22 @@ profiles:
         pattern: "(?i)error|failed|panic"
         color: "#ffcc00"
         capture_cli_text: true
+        output_dir: ./baeru-artifacts
+        output_prefix: "alerts-{backend}-{env:USER}-"
         command: ["sh", "-c", "printf '%s\n' \"$BAERU_HIGHLIGHT_EVENT_JSON\""]
+```
+
+`output_prefix` is optional for both CLI flags and `highlight_rules`. When set, it is prepended to generated filenames inside `output_dir`.
+
+Example:
+
+```bash
+baeru --backend cli \
+  -e '(?i)error' \
+  --highlight-capture-cli-text \
+  --highlight-output-dir ./baeru-artifacts \
+  --highlight-output-prefix 'nightly-{backend}-{timestamp}-' \
+  -- journalctl -n 50
 ```
 
 Per match rule, `baeru` can:

@@ -151,6 +151,9 @@ pub(crate) struct HighlightArgs {
 
     #[arg(long = "highlight-output-dir")]
     pub(crate) highlight_output_dir: Option<PathBuf>,
+
+    #[arg(long = "highlight-output-prefix")]
+    pub(crate) highlight_output_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -267,6 +270,7 @@ pub(crate) struct HighlightRuleConfig {
     #[serde(default)]
     pub(crate) capture_cli_text: bool,
     pub(crate) output_dir: Option<PathBuf>,
+    pub(crate) output_prefix: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -345,6 +349,7 @@ pub(crate) struct HighlightRule {
     pub(crate) capture_tui_screenshot: bool,
     pub(crate) capture_cli_text: bool,
     pub(crate) output_dir: Option<PathBuf>,
+    pub(crate) output_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -160,6 +160,7 @@ fn build_runtime_with_env(
         highlight.highlight_capture_tui_screenshot,
         highlight.highlight_capture_cli_text,
         highlight.highlight_output_dir.as_deref(),
+        highlight.highlight_output_prefix.as_deref(),
         &profile.highlight_rules,
         highlight_default_color,
     )
@@ -210,6 +211,7 @@ fn compile_highlight_rules(
     cli_capture_tui_screenshot: bool,
     cli_capture_cli_text: bool,
     cli_output_dir: Option<&Path>,
+    cli_output_prefix: Option<&str>,
     profile_rules: &[HighlightRuleConfig],
     default_color: Rgb,
 ) -> Result<Vec<HighlightRule>> {
@@ -230,6 +232,7 @@ fn compile_highlight_rules(
             capture_tui_screenshot: cli_capture_tui_screenshot,
             capture_cli_text: cli_capture_cli_text,
             output_dir: cli_output_dir.map(Path::to_path_buf),
+            output_prefix: cli_output_prefix.map(str::to_string),
         });
     }
     for rule in profile_rules {
@@ -249,6 +252,7 @@ fn compile_highlight_rules(
             capture_tui_screenshot: rule.capture_tui_screenshot,
             capture_cli_text: rule.capture_cli_text,
             output_dir: rule.output_dir.clone(),
+            output_prefix: rule.output_prefix.clone(),
         });
     }
     Ok(rules)
@@ -726,6 +730,7 @@ profiles:
                     highlight_capture_cli_text: false,
                     highlight_capture_tui_screenshot: false,
                     highlight_output_dir: None,
+                    highlight_output_prefix: None,
                 },
                 transform: TransformArgs {
                     replace: vec![],
@@ -802,6 +807,7 @@ profiles:
                     highlight_capture_cli_text: false,
                     highlight_capture_tui_screenshot: false,
                     highlight_output_dir: None,
+                    highlight_output_prefix: None,
                 },
                 transform: TransformArgs {
                     replace: vec![],
@@ -858,6 +864,7 @@ profiles:
                     highlight_capture_cli_text: true,
                     highlight_capture_tui_screenshot: true,
                     highlight_output_dir: Some(PathBuf::from("./captures")),
+                    highlight_output_prefix: Some("alerts-{key}-".to_string()),
                 },
                 transform: TransformArgs {
                     replace: vec![],
@@ -884,6 +891,7 @@ profiles:
         assert!(rule.capture_cli_text);
         assert!(rule.capture_tui_screenshot);
         assert_eq!(rule.output_dir.as_deref(), Some(Path::new("./captures")));
+        assert_eq!(rule.output_prefix.as_deref(), Some("alerts-{key}-"));
         assert_eq!(rule.color, Rgb(0xff, 0xcc, 0x00));
     }
 
