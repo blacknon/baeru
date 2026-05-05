@@ -107,6 +107,11 @@ profiles:
     frames: 18
     max_lines: 20
     max_bytes: 120000
+    highlight_rules:
+      - key: test-failure
+        pattern: "(?i)error|failed|panic"
+        color: "#ffff00"
+        capture_cli_text: true
 
   - name: neofetch
     match:
@@ -136,3 +141,8 @@ profiles:
     live_render_mouse_quiet_ms: 180
     animation_color_fade: true
     animation_color_darken_factor: 0.22
+    highlight_rules:
+      - key: high-load
+        pattern: "(?i)load average|running"
+        color: "#ffff00"
+        capture_tui_screenshot: true

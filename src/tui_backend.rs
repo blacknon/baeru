@@ -1,4 +1,5 @@
 use crate::{
+    highlight::{dispatch_tui_triggers, evaluate_lines, filter_new_triggers, TriggerState},
     keymap::KeyMapper,
     model::{
         EffectKind, Feature, Rgb, Runtime, Theme, ALT_SCREEN_ENTER_SEQUENCES,
@@ -97,6 +98,17 @@ fn run_live_render(rt: Runtime) -> Result<()> {
     let emulate_alt_screen = contains_alt_screen_enter_sequence(&captured);
     let initial_screen = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
     let initial_state = collect_terminal_state(parser.screen(), rows, cols);
+    let initial_lines = screen_lines(&initial_screen);
+    let initial_highlights = evaluate_lines(&initial_lines, &rt.highlight_rules);
+    let mut trigger_state = TriggerState::default();
+    let new_triggers = filter_new_triggers(&mut trigger_state, initial_highlights.triggers.clone());
+    dispatch_tui_triggers(
+        &new_triggers,
+        Some(&screen_to_svg(
+            &initial_screen,
+            Some(&initial_highlights.colors),
+        )),
+    )?;
 
     let _guard = TerminalGuard::enter(true)?;
     let mut stdout = io::stdout();
@@ -109,6 +121,7 @@ fn run_live_render(rt: Runtime) -> Result<()> {
     });
     animate_styled_reveal_in_place(
         &initial_screen,
+        Some(&initial_highlights.colors),
         rows,
         cols,
         RevealTuning {
@@ -123,13 +136,16 @@ fn run_live_render(rt: Runtime) -> Result<()> {
     passthrough.feed(&mut stdout, &captured)?;
     draw_live_screen(
         &mut stdout,
-        &initial_screen,
-        &initial_state,
-        RedrawMasks {
-            redraw: &full_screen_changed(&initial_screen),
-            highlight: &no_screen_changed(&initial_screen),
+        LiveRenderScene {
+            cells: &initial_screen,
+            state: &initial_state,
+            masks: RedrawMasks {
+                redraw: &full_screen_changed(&initial_screen),
+                highlight: &no_screen_changed(&initial_screen),
+            },
+            highlight_colors: Some(&initial_highlights.colors),
+            theme: &rt.theme,
         },
-        &rt.theme,
         LiveRenderTuning {
             duration_ms: rt.live_render_duration_ms,
             color_fade: rt.animation_color_fade,
@@ -175,6 +191,14 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                 passthrough.feed(&mut stdout, &buf[..n])?;
                 parser.process(&buf[..n]);
                 let current = collect_screen(parser.screen(), rows, cols, Some(&rt.theme));
+                let current_lines = screen_lines(&current);
+                let current_highlights = evaluate_lines(&current_lines, &rt.highlight_rules);
+                let new_triggers =
+                    filter_new_triggers(&mut trigger_state, current_highlights.triggers.clone());
+                dispatch_tui_triggers(
+                    &new_triggers,
+                    Some(&screen_to_svg(&current, Some(&current_highlights.colors))),
+                )?;
                 let state = collect_terminal_state(parser.screen(), rows, cols);
                 let scroll_hint =
                     detect_scroll_hint(prev.as_ref(), &current, rows as usize, cols as usize);
@@ -183,10 +207,16 @@ fn run_live_render(rt: Runtime) -> Result<()> {
                 apply_scroll_hint(&mut changed, scroll_hint, rows as usize, cols as usize);
                 animate_live_render_update(
                     &mut stdout,
-                    &current,
-                    &state,
-                    &changed,
-                    &rt.theme,
+                    LiveRenderScene {
+                        cells: &current,
+                        state: &state,
+                        masks: RedrawMasks {
+                            redraw: &changed,
+                            highlight: &changed,
+                        },
+                        highlight_colors: Some(&current_highlights.colors),
+                        theme: &rt.theme,
+                    },
                     LiveRenderFrame {
                         scroll_hint,
                         effect: if passthrough.mouse_reporting_active
@@ -220,38 +250,38 @@ fn run_live_render(rt: Runtime) -> Result<()> {
 
 fn animate_live_render_update(
     out: &mut io::Stdout,
-    cells: &[Vec<StyledCell>],
-    state: &TerminalState,
-    changed: &[Vec<bool>],
-    theme: &Theme,
+    scene: LiveRenderScene<'_>,
     base_frame: LiveRenderFrame,
     tuning: LiveRenderTuning,
 ) -> io::Result<()> {
     let ratios = live_render_effect_ratios(base_frame.effect);
     let per_frame_ms = live_render_per_frame_ms(tuning.duration_ms, base_frame.effect);
-    let full_redraw = full_screen_changed(cells);
-    let no_highlight = no_screen_changed(cells);
+    let full_redraw = full_screen_changed(scene.cells);
+    let no_highlight = no_screen_changed(scene.cells);
 
     for (idx, ratio) in ratios.iter().copied().enumerate() {
         let redraw_mask = if idx + 1 == ratios.len() {
             &full_redraw
         } else {
-            changed
+            scene.masks.redraw
         };
         let highlight_mask = if idx + 1 == ratios.len() {
             &no_highlight
         } else {
-            changed
+            scene.masks.highlight
         };
         draw_live_screen(
             out,
-            cells,
-            state,
-            RedrawMasks {
-                redraw: redraw_mask,
-                highlight: highlight_mask,
+            LiveRenderScene {
+                cells: scene.cells,
+                state: scene.state,
+                masks: RedrawMasks {
+                    redraw: redraw_mask,
+                    highlight: highlight_mask,
+                },
+                highlight_colors: scene.highlight_colors,
+                theme: scene.theme,
             },
-            theme,
             tuning,
             LiveRenderFrame {
                 scroll_hint: if idx == 0 {
@@ -329,8 +359,14 @@ fn run_reveal(rt: Runtime) -> Result<()> {
         Some(rt.theme.clone())
     };
     let screen = collect_screen(parser.screen(), rows, cols, theme.as_ref());
+    let highlight_eval = evaluate_lines(&screen_lines(&screen), &rt.highlight_rules);
+    dispatch_tui_triggers(
+        &highlight_eval.triggers,
+        Some(&screen_to_svg(&screen, Some(&highlight_eval.colors))),
+    )?;
     animate_styled_reveal(
         &screen,
+        Some(&highlight_eval.colors),
         rows,
         cols,
         RevealTuning {
@@ -356,6 +392,7 @@ fn run_reveal(rt: Runtime) -> Result<()> {
         session,
         theme,
         keymap,
+        rt.highlight_rules.clone(),
         Some(initial_output),
         emulate_alt_screen,
     )
@@ -368,7 +405,14 @@ fn run_pty_passthrough(
 ) -> Result<()> {
     let (cols, rows) = size().unwrap_or((80, 24));
     let session = PtySession::spawn(&rt.command, rows, cols)?;
-    continue_passthrough(session, theme, keymap, None, false)
+    continue_passthrough(
+        session,
+        theme,
+        keymap,
+        rt.highlight_rules.clone(),
+        None,
+        false,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -428,6 +472,7 @@ fn continue_passthrough(
     mut session: PtySession,
     theme: Option<Theme>,
     keymap: HashMap<Vec<u8>, Vec<u8>>,
+    highlight_rules: Vec<crate::model::HighlightRule>,
     initial_output: Option<Vec<u8>>,
     leave_alt_screen_on_exit: bool,
 ) -> Result<()> {
@@ -442,7 +487,19 @@ fn continue_passthrough(
 
     let mut out = io::stdout();
     let mut rewriter = theme.map(SgrRewriter::new);
+    let mut parser = size()
+        .ok()
+        .map(|(cols, rows)| vt100::Parser::new(rows, cols, 0));
+    let mut trigger_state = TriggerState::default();
     if let Some(initial) = initial_output.as_deref() {
+        if let Some(parser) = parser.as_mut() {
+            parser.process(initial);
+            maybe_dispatch_passthrough_highlights(
+                parser.screen(),
+                &highlight_rules,
+                &mut trigger_state,
+            )?;
+        }
         if let Some(rw) = rewriter.as_mut() {
             let bytes = rw.feed(initial);
             out.write_all(&bytes)?;
@@ -456,6 +513,14 @@ fn continue_passthrough(
         match session.reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                if let Some(parser) = parser.as_mut() {
+                    parser.process(&buf[..n]);
+                    maybe_dispatch_passthrough_highlights(
+                        parser.screen(),
+                        &highlight_rules,
+                        &mut trigger_state,
+                    )?;
+                }
                 if let Some(rw) = rewriter.as_mut() {
                     let bytes = rw.feed(&buf[..n]);
                     out.write_all(&bytes)?;
@@ -908,6 +973,15 @@ struct RedrawMasks<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct LiveRenderScene<'a> {
+    cells: &'a [Vec<StyledCell>],
+    state: &'a TerminalState,
+    masks: RedrawMasks<'a>,
+    highlight_colors: Option<&'a [Vec<Option<Rgb>>]>,
+    theme: &'a Theme,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct CellAnimCtx {
     row: usize,
     col: usize,
@@ -962,6 +1036,124 @@ fn collect_screen(
         result.push(out_row);
     }
     result
+}
+
+fn screen_lines(cells: &[Vec<StyledCell>]) -> Vec<String> {
+    cells
+        .iter()
+        .map(|row| {
+            row.iter()
+                .filter(|cell| !cell.wide_continuation)
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+fn maybe_dispatch_passthrough_highlights(
+    screen: &vt100::Screen,
+    highlight_rules: &[crate::model::HighlightRule],
+    trigger_state: &mut TriggerState,
+) -> Result<()> {
+    if highlight_rules.is_empty() {
+        return Ok(());
+    }
+    let rows = screen.size().0;
+    let cols = screen.size().1;
+    let cells = collect_screen(screen, rows, cols, None);
+    let lines = screen_lines(&cells);
+    let evaluation = evaluate_lines(&lines, highlight_rules);
+    let new_triggers = filter_new_triggers(trigger_state, evaluation.triggers);
+    dispatch_tui_triggers(
+        &new_triggers,
+        Some(&screen_to_svg(&cells, Some(&evaluation.colors))),
+    )?;
+    Ok(())
+}
+
+fn screen_to_svg(
+    cells: &[Vec<StyledCell>],
+    highlight_colors: Option<&[Vec<Option<Rgb>>]>,
+) -> String {
+    let cell_width = 9usize;
+    let cell_height = 18usize;
+    let width = cells.first().map(|row| row.len()).unwrap_or(0) * cell_width;
+    let height = cells.len() * cell_height;
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
+    ));
+    svg.push_str(r##"<rect width="100%" height="100%" fill="#101010"/>"##);
+    svg.push_str(r#"<g font-family="monospace" font-size="14" dominant-baseline="hanging">"#);
+    for (row_idx, row) in cells.iter().enumerate() {
+        for (col_idx, cell) in row.iter().enumerate() {
+            if cell.wide_continuation {
+                continue;
+            }
+            let x = col_idx * cell_width;
+            let y = row_idx * cell_height;
+            let bg = highlight_colors
+                .and_then(|rows| rows.get(row_idx))
+                .and_then(|row_colors| row_colors.get(col_idx))
+                .copied()
+                .flatten()
+                .map(rgb_hex)
+                .unwrap_or_else(|| display_color_hex(cell.bg));
+            if bg != "#00000000" && bg != "#000000" {
+                svg.push_str(&format!(
+                    r#"<rect x="{x}" y="{y}" width="{cell_width}" height="{cell_height}" fill="{bg}"/>"#
+                ));
+            }
+            let fill = display_color_hex(cell.fg);
+            let text = svg_escape(&cell.text);
+            svg.push_str(&format!(
+                r#"<text x="{x}" y="{y}" fill="{fill}">{text}</text>"#
+            ));
+        }
+    }
+    svg.push_str("</g></svg>");
+    svg
+}
+
+fn display_color_hex(color: DisplayColor) -> String {
+    match color {
+        DisplayColor::Default => "#d0d0d0".to_string(),
+        DisplayColor::Indexed(idx) => rgb_hex(indexed_to_rgb(idx)),
+        DisplayColor::Rgb(rgb) => rgb_hex(rgb),
+    }
+}
+
+fn indexed_to_rgb(idx: u8) -> Rgb {
+    match idx {
+        0 => Rgb(0, 0, 0),
+        1 => Rgb(205, 49, 49),
+        2 => Rgb(13, 188, 121),
+        3 => Rgb(229, 229, 16),
+        4 => Rgb(36, 114, 200),
+        5 => Rgb(188, 63, 188),
+        6 => Rgb(17, 168, 205),
+        7 => Rgb(229, 229, 229),
+        8 => Rgb(102, 102, 102),
+        9 => Rgb(241, 76, 76),
+        10 => Rgb(35, 209, 139),
+        11 => Rgb(245, 245, 67),
+        12 => Rgb(59, 142, 234),
+        13 => Rgb(214, 112, 214),
+        14 => Rgb(41, 184, 219),
+        _ => Rgb(255, 255, 255),
+    }
+}
+
+fn rgb_hex(rgb: Rgb) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2)
+}
+
+fn svg_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 impl StyledCell {
@@ -1025,16 +1217,18 @@ fn display_vt_color(theme: Option<&Theme>, color: vt100::Color, foreground: bool
 
 fn animate_styled_reveal(
     cells: &[Vec<StyledCell>],
+    highlight_colors: Option<&[Vec<Option<Rgb>>]>,
     rows: u16,
     cols: u16,
     tuning: RevealTuning,
 ) -> Result<()> {
     let _guard = TerminalGuard::enter(true)?;
-    animate_styled_reveal_in_place(cells, rows, cols, tuning)
+    animate_styled_reveal_in_place(cells, highlight_colors, rows, cols, tuning)
 }
 
 fn animate_styled_reveal_in_place(
     cells: &[Vec<StyledCell>],
+    highlight_colors: Option<&[Vec<Option<Rgb>>]>,
     rows: u16,
     cols: u16,
     tuning: RevealTuning,
@@ -1069,6 +1263,14 @@ fn animate_styled_reveal_in_place(
                         );
                     }
                 }
+                if let Some(rgb) = highlight_colors
+                    .and_then(|rows| rows.get(r))
+                    .and_then(|row_colors| row_colors.get(c))
+                    .copied()
+                    .flatten()
+                {
+                    animated.bg = DisplayColor::Rgb(rgb);
+                }
                 write_cell(&mut out, &animated, text, &mut style_state)?;
             }
             write!(out, "\x1b[0m")?;
@@ -1082,9 +1284,18 @@ fn animate_styled_reveal_in_place(
     execute!(out, crossterm::cursor::MoveTo(0, 0))?;
     for (r, row) in cells.iter().enumerate() {
         let mut style_state = None;
-        for cell in row {
+        for (c, cell) in row.iter().enumerate() {
             if !cell.wide_continuation {
-                write_cell(&mut out, cell, &cell.text, &mut style_state)?;
+                let mut final_cell = cell.clone();
+                if let Some(rgb) = highlight_colors
+                    .and_then(|rows| rows.get(r))
+                    .and_then(|row_colors| row_colors.get(c))
+                    .copied()
+                    .flatten()
+                {
+                    final_cell.bg = DisplayColor::Rgb(rgb);
+                }
+                write_cell(&mut out, &final_cell, &final_cell.text, &mut style_state)?;
             }
         }
         write!(out, "\x1b[0m")?;
@@ -1249,22 +1460,19 @@ fn diff_screen(
 
 fn draw_live_screen(
     out: &mut io::Stdout,
-    cells: &[Vec<StyledCell>],
-    state: &TerminalState,
-    masks: RedrawMasks<'_>,
-    theme: &Theme,
+    scene: LiveRenderScene<'_>,
     tuning: LiveRenderTuning,
     animation: LiveRenderFrame,
 ) -> io::Result<()> {
-    let preserve_terminal = theme_preserves_terminal_colors(Some(theme));
+    let preserve_terminal = theme_preserves_terminal_colors(Some(scene.theme));
     match animation.scroll_hint {
         Some(ScrollHint::Up(lines)) => execute!(out, ScrollUp(lines))?,
         Some(ScrollHint::Down(lines)) => execute!(out, ScrollDown(lines))?,
         None => {}
     }
-    let rows = cells.len();
+    let rows = scene.cells.len();
     for r in 0..rows {
-        if !row_has_changes(masks.redraw, r) {
+        if !row_has_changes(scene.masks.redraw, r) {
             continue;
         }
 
@@ -1273,15 +1481,24 @@ fn draw_live_screen(
         // underlying shell can bleed through.
         execute!(out, crossterm::cursor::MoveTo(0, r as u16))?;
         let mut style_state = None;
-        for c in 0..cells[r].len() {
-            let cell = &cells[r][c];
+        for c in 0..scene.cells[r].len() {
+            let cell = &scene.cells[r][c];
             if cell.wide_continuation {
                 continue;
             }
-            if masks.highlight[r][c] && !cell.text.trim().is_empty() {
+            let highlight_bg = scene
+                .highlight_colors
+                .and_then(|rows| rows.get(r))
+                .and_then(|row_colors| row_colors.get(c))
+                .copied()
+                .flatten();
+            if scene.masks.highlight[r][c] && !cell.text.trim().is_empty() {
                 let mut highlighted = cell.clone();
                 if !preserve_terminal {
                     highlighted.bold = true;
+                }
+                if let Some(rgb) = highlight_bg {
+                    highlighted.bg = DisplayColor::Rgb(rgb);
                 }
                 if tuning.color_fade && !preserve_terminal && animation.ratio < 1.0 {
                     highlighted.fg = animated_faded_color(
@@ -1296,7 +1513,7 @@ fn draw_live_screen(
                     CellAnimCtx {
                         row: r,
                         col: c,
-                        total_rows: cells.len(),
+                        total_rows: scene.cells.len(),
                         frame: animation.frame,
                         ratio: animation.ratio,
                         color_fade: tuning.color_fade,
@@ -1305,16 +1522,20 @@ fn draw_live_screen(
                 );
                 write_cell(out, &highlighted, &text, &mut style_state)?;
             } else {
-                write_cell(out, cell, &cell.text, &mut style_state)?;
+                let mut stable = cell.clone();
+                if let Some(rgb) = highlight_bg {
+                    stable.bg = DisplayColor::Rgb(rgb);
+                }
+                write_cell(out, &stable, &stable.text, &mut style_state)?;
             }
         }
         write!(out, "\x1b[0m")?;
     }
     execute!(
         out,
-        crossterm::cursor::MoveTo(state.cursor_col, state.cursor_row)
+        crossterm::cursor::MoveTo(scene.state.cursor_col, scene.state.cursor_row)
     )?;
-    if state.cursor_visible {
+    if scene.state.cursor_visible {
         execute!(out, Show)?;
     } else {
         execute!(out, Hide)?;

@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use regex::Regex;
 use serde::Deserialize;
 use std::{
     collections::{BTreeSet, HashMap},
@@ -117,6 +118,12 @@ pub(crate) struct Cli {
     #[arg(long, default_value_t = false)]
     pub(crate) no_theme_after_reveal: bool,
 
+    #[arg(short = 'e', long = "highlight")]
+    pub(crate) highlight: Vec<String>,
+
+    #[arg(long)]
+    pub(crate) highlight_color: Option<String>,
+
     #[arg(last = true, allow_hyphen_values = true)]
     pub(crate) command: Vec<OsString>,
 }
@@ -157,6 +164,9 @@ pub(crate) struct Profile {
     pub(crate) cli_settled_color: Option<String>,
     pub(crate) cli_gradient_start: Option<String>,
     pub(crate) cli_gradient_end: Option<String>,
+    pub(crate) highlight_color: Option<String>,
+    #[serde(default)]
+    pub(crate) highlight_rules: Vec<HighlightRuleConfig>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -171,6 +181,19 @@ pub(crate) struct MatchSpec {
 pub(crate) struct KeymapFile {
     #[serde(default)]
     pub(crate) keymap: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub(crate) struct HighlightRuleConfig {
+    pub(crate) key: Option<String>,
+    pub(crate) pattern: String,
+    pub(crate) color: Option<String>,
+    pub(crate) command: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) capture_tui_screenshot: bool,
+    #[serde(default)]
+    pub(crate) capture_cli_text: bool,
+    pub(crate) output_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -223,6 +246,19 @@ pub(crate) struct Runtime {
     pub(crate) cli_gradient_start: Option<Rgb>,
     pub(crate) cli_gradient_end: Option<Rgb>,
     pub(crate) no_theme_after_reveal: bool,
+    pub(crate) highlight_rules: Vec<HighlightRule>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HighlightRule {
+    pub(crate) key: String,
+    pub(crate) pattern: String,
+    pub(crate) regex: Regex,
+    pub(crate) color: Rgb,
+    pub(crate) command: Option<Vec<OsString>>,
+    pub(crate) capture_tui_screenshot: bool,
+    pub(crate) capture_cli_text: bool,
+    pub(crate) output_dir: Option<PathBuf>,
 }
 
 pub(crate) const CLI_SCRAMBLE: &[char] = &[

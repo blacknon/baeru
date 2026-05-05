@@ -104,6 +104,7 @@ cargo run -- --mode reveal --theme-file examples/themes/jirai-pink.yml --keymap-
 cargo run -- --mode live_render --theme-file examples/themes/jirai-pink.yml -- htop
 cargo run -- --backend cli -- ls -la
 cargo run -- --backend cli -- git status
+cargo run -- --backend cli -e '(?i)error' -e 'timeout' -- journalctl -n 50
 ```
 
 If no `--config-file` is given, `baeru` looks for config files in this order:
@@ -238,6 +239,58 @@ Supported effects:
 - `scatter`
 - `sweep`
 - `wipe`
+
+## Highlight rules
+
+`baeru` can watch output for matching keywords or regular expressions and react to them.
+
+CLI option:
+
+```bash
+baeru --backend cli -e '(?i)error' -e 'timeout' -- journalctl -n 50
+```
+
+- `-e`, `--highlight`
+  - regex pattern, repeatable
+- `--highlight-color`
+  - default background color for CLI `-e` rules
+  - default is yellow: `#ffff00`
+
+Config example:
+
+```yaml
+profiles:
+  - name: journal-alerts
+    match:
+      command: journalctl
+    backend: cli
+    features:
+      - inline_animation
+    highlight_color: "#ffff00"
+    highlight_rules:
+      - key: error
+        pattern: "(?i)error|failed|panic"
+        color: "#ffcc00"
+        capture_cli_text: true
+        command: ["sh", "-c", "printf '%s\n' \"$BAERU_HIGHLIGHT_EVENT_JSON\""]
+```
+
+Per match rule, `baeru` can:
+
+- highlight matching text
+- run a command
+- write CLI output to a text file
+- write a TUI screen snapshot as SVG
+
+Triggered commands receive context through environment variables:
+
+- `BAERU_HIGHLIGHT_BACKEND`
+- `BAERU_HIGHLIGHT_KEY`
+- `BAERU_HIGHLIGHT_PATTERN`
+- `BAERU_HIGHLIGHT_MATCHES_JSON`
+- `BAERU_HIGHLIGHT_EVENT_JSON`
+- `BAERU_HIGHLIGHT_CAPTURE_PATH`
+- `BAERU_HIGHLIGHT_CAPTURE_KIND`
 - `fade`
 - `plain`
 

@@ -1,10 +1,14 @@
 use crate::{
     keymap::{compile_keymap, read_keymap},
-    model::{Backend, Cli, ConfigFile, EffectKind, Feature, Mode, Profile, Runtime},
+    model::{
+        Backend, Cli, ConfigFile, EffectKind, Feature, HighlightRule, HighlightRuleConfig, Mode,
+        Profile, Rgb, Runtime,
+    },
     support::{env_flag, is_term_dumb},
     theme::{builtin_theme, parse_optional_rgb, read_theme},
 };
 use anyhow::{Context, Result};
+use regex::Regex;
 use std::{
     collections::{BTreeSet, HashMap},
     env,
@@ -127,6 +131,19 @@ fn build_runtime_with_env(
         .context("invalid cli_gradient_start")?;
     let cli_gradient_end = parse_optional_rgb(profile.cli_gradient_end.as_deref())
         .context("invalid cli_gradient_end")?;
+    let highlight_default_color = parse_highlight_color(
+        profile
+            .highlight_color
+            .as_deref()
+            .or(cli.highlight_color.as_deref()),
+    )
+    .context("invalid highlight_color")?;
+    let highlight_rules = compile_highlight_rules(
+        &cli.highlight,
+        &profile.highlight_rules,
+        highlight_default_color,
+    )
+    .context("failed to compile highlight rules")?;
 
     Ok(Runtime {
         backend,
@@ -150,7 +167,53 @@ fn build_runtime_with_env(
         cli_gradient_start,
         cli_gradient_end,
         no_theme_after_reveal: cli.no_theme_after_reveal,
+        highlight_rules,
     })
+}
+
+fn parse_highlight_color(value: Option<&str>) -> Result<Rgb> {
+    Ok(parse_optional_rgb(value)?.unwrap_or(Rgb(255, 255, 0)))
+}
+
+fn compile_highlight_rules(
+    cli_patterns: &[String],
+    profile_rules: &[HighlightRuleConfig],
+    default_color: Rgb,
+) -> Result<Vec<HighlightRule>> {
+    let mut rules = Vec::new();
+    for pattern in cli_patterns {
+        rules.push(HighlightRule {
+            key: pattern.clone(),
+            pattern: pattern.clone(),
+            regex: Regex::new(pattern)
+                .with_context(|| format!("invalid highlight regex: {pattern}"))?,
+            color: default_color,
+            command: None,
+            capture_tui_screenshot: false,
+            capture_cli_text: false,
+            output_dir: None,
+        });
+    }
+    for rule in profile_rules {
+        let key = rule.key.clone().unwrap_or_else(|| rule.pattern.clone());
+        let color = parse_highlight_color(rule.color.as_deref().or(Some("#ffff00")))?;
+        rules.push(HighlightRule {
+            key,
+            pattern: rule.pattern.clone(),
+            regex: Regex::new(&rule.pattern)
+                .with_context(|| format!("invalid highlight regex: {}", rule.pattern))?,
+            color,
+            command: rule.command.as_ref().map(|cmd| {
+                cmd.iter()
+                    .map(|part| OsString::from(part.as_str()))
+                    .collect::<Vec<_>>()
+            }),
+            capture_tui_screenshot: rule.capture_tui_screenshot,
+            capture_cli_text: rule.capture_cli_text,
+            output_dir: rule.output_dir.clone(),
+        });
+    }
+    Ok(rules)
 }
 
 fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
@@ -418,6 +481,38 @@ profiles:
     }
 
     #[test]
+    fn read_config_parses_highlight_rules() {
+        let path = unique_temp_file("baeru-highlight-config.yml");
+        fs::write(
+            &path,
+            r##"
+profiles:
+  - name: alerts
+    match:
+      command: journalctl
+    backend: cli
+    highlight_color: "#ffff00"
+    highlight_rules:
+      - key: error
+        pattern: "(?i)error"
+        color: "#ffcc00"
+        capture_cli_text: true
+        command: ["echo", "matched"]
+"##,
+        )
+        .expect("fixture config should be written");
+
+        let config = read_config(&path).expect("config should parse");
+        let profile = &config.profiles[0];
+        assert_eq!(profile.highlight_color.as_deref(), Some("#ffff00"));
+        assert_eq!(profile.highlight_rules.len(), 1);
+        assert_eq!(profile.highlight_rules[0].key.as_deref(), Some("error"));
+        assert!(profile.highlight_rules[0].capture_cli_text);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn build_runtime_with_env_applies_cli_profile_and_colors() {
         let config_path = unique_temp_file("baeru-runtime-config.yml");
         let theme_path = unique_temp_file("baeru-runtime-theme.yml");
@@ -482,6 +577,8 @@ profiles:
                 max_lines: 200,
                 max_bytes: 1_000_000,
                 animate_over_limit: false,
+                highlight: vec![],
+                highlight_color: None,
                 no_theme_after_reveal: false,
                 command: vec![OsString::from("ls")],
             },
@@ -537,6 +634,8 @@ profiles:
                 max_lines: 200,
                 max_bytes: 1_000_000,
                 animate_over_limit: false,
+                highlight: vec![],
+                highlight_color: None,
                 no_theme_after_reveal: false,
                 command: vec![OsString::from("htop")],
             },

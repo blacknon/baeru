@@ -1,5 +1,6 @@
 mod cli_backend;
 mod config;
+mod highlight;
 mod keymap;
 mod model;
 mod support;

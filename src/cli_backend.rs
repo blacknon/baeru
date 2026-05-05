@@ -1,4 +1,5 @@
 use crate::{
+    highlight::{dispatch_cli_triggers, evaluate_lines},
     model::{EffectKind, Feature, Rgb, Runtime, CLI_SCRAMBLE},
     support::{env_flag, exit_with_status, print_raw_text, sleep_frame},
     theme::{darken, gradient, indexed_color, lerp},
@@ -55,34 +56,50 @@ pub(crate) fn run_cli_backend(rt: Runtime) -> Result<()> {
         capture_command_text(&rt.command, stdout_is_tty)?
     };
 
+    let plain_lines = split_ansi_plain_lines_preserve_tail(&text);
+    let evaluation = evaluate_lines(&plain_lines, &rt.highlight_rules);
+    dispatch_cli_triggers(&evaluation.triggers, &text)?;
+
     if !stdout_is_tty
         || !rt.features.contains(&Feature::InlineAnimation)
-        || rt.effect == EffectKind::Plain
         || env_flag("NO_COLOR")
         || text.is_empty()
     {
-        print_raw_text(&text)?;
+        if stdout_is_tty {
+            render_cli_without_animation(&text, &rt, &evaluation.colors)?;
+        } else {
+            print_raw_text(&text)?;
+        }
         exit_with_status(exit_code);
     }
 
     if text.len() > rt.max_bytes && !rt.animate_over_limit {
-        print_raw_text(&text)?;
+        render_cli_without_animation(&text, &rt, &evaluation.colors)?;
         exit_with_status(exit_code);
     }
 
-    if !animate_cli_output(&text, &rt)? {
-        print_raw_text(&text)?;
+    if rt.effect == EffectKind::Plain {
+        render_cli_without_animation(&text, &rt, &evaluation.colors)?;
+        exit_with_status(exit_code);
+    }
+
+    if !animate_cli_output(&text, &rt, &plain_lines, &evaluation.colors)? {
+        render_cli_without_animation(&text, &rt, &evaluation.colors)?;
     }
     exit_with_status(exit_code);
 }
 
-fn animate_cli_output(text: &str, rt: &Runtime) -> Result<bool> {
+fn animate_cli_output(
+    text: &str,
+    rt: &Runtime,
+    plain_lines: &[String],
+    highlight_colors: &[Vec<Option<Rgb>>],
+) -> Result<bool> {
     if cli_preserves_source_ansi(rt) {
         let styled_lines = split_ansi_lines_preserve_tail(text);
-        return animate_cli_styled_output(&styled_lines, rt);
+        return animate_cli_styled_output(&styled_lines, rt, highlight_colors);
     }
 
-    let lines = split_ansi_plain_lines_preserve_tail(text);
     let (_, rows) = size()?;
     let viewport_height = rows.saturating_sub(1) as usize;
     if viewport_height == 0 {
@@ -91,11 +108,12 @@ fn animate_cli_output(text: &str, rt: &Runtime) -> Result<bool> {
 
     let height = viewport_height
         .min(rt.max_lines.max(1))
-        .min(lines.len().max(1));
-    let split_at = lines.len().saturating_sub(height);
-    let (head_lines, tail_lines) = lines.split_at(split_at);
+        .min(plain_lines.len().max(1));
+    let split_at = plain_lines.len().saturating_sub(height);
+    let (head_lines, tail_lines) = plain_lines.split_at(split_at);
+    let (head_highlights, tail_highlights) = highlight_colors.split_at(split_at);
     debug_cli_animation(
-        lines.len(),
+        plain_lines.len(),
         head_lines.len(),
         tail_lines.len(),
         viewport_height,
@@ -106,8 +124,8 @@ fn animate_cli_output(text: &str, rt: &Runtime) -> Result<bool> {
         .cli_settled_color
         .unwrap_or_else(|| rt.theme.default_fg_rgb());
 
-    for line in head_lines {
-        write_cli_colored_line(&mut stdout, line, settled_fg)?;
+    for (line, highlights) in head_lines.iter().zip(head_highlights) {
+        write_cli_colored_line(&mut stdout, line, highlights, settled_fg)?;
     }
     write!(stdout, "\x1b[?25l")?;
     for _ in 0..height {
@@ -119,13 +137,13 @@ fn animate_cli_output(text: &str, rt: &Runtime) -> Result<bool> {
         write!(stdout, "\x1b[{height}A")?;
         let progress = frame as f32 / rt.frames.max(1) as f32;
         let fg = cli_frame_fg(rt, settled_fg, progress);
-        for (row, line) in tail_lines.iter().enumerate() {
+        for (row, (line, highlights)) in tail_lines.iter().zip(tail_highlights).enumerate() {
             let rendered = if frame == rt.frames {
                 line.clone()
             } else {
                 render_cli_frame(line, frame, row, tail_lines.len(), rt.frames, rt.effect)
             };
-            write_cli_colored_line(&mut stdout, &rendered, fg)?;
+            write_cli_colored_line(&mut stdout, &rendered, highlights, fg)?;
         }
         for _ in tail_lines.len()..height {
             writeln!(stdout)?;
@@ -139,7 +157,11 @@ fn animate_cli_output(text: &str, rt: &Runtime) -> Result<bool> {
     Ok(true)
 }
 
-fn animate_cli_styled_output(lines: &[Vec<CliStyledChar>], rt: &Runtime) -> Result<bool> {
+fn animate_cli_styled_output(
+    lines: &[Vec<CliStyledChar>],
+    rt: &Runtime,
+    highlight_colors: &[Vec<Option<Rgb>>],
+) -> Result<bool> {
     let (_, rows) = size()?;
     let viewport_height = rows.saturating_sub(1) as usize;
     if viewport_height == 0 {
@@ -151,6 +173,7 @@ fn animate_cli_styled_output(lines: &[Vec<CliStyledChar>], rt: &Runtime) -> Resu
         .min(lines.len().max(1));
     let split_at = lines.len().saturating_sub(height);
     let (head_lines, tail_lines) = lines.split_at(split_at);
+    let (head_highlights, tail_highlights) = highlight_colors.split_at(split_at);
     debug_cli_animation(
         lines.len(),
         head_lines.len(),
@@ -160,8 +183,15 @@ fn animate_cli_styled_output(lines: &[Vec<CliStyledChar>], rt: &Runtime) -> Resu
     );
     let mut stdout = io::stdout().lock();
 
-    for line in head_lines {
-        write_cli_styled_line(&mut stdout, line, &plain_line_from_styled(line), rt, 1.0)?;
+    for (line, highlights) in head_lines.iter().zip(head_highlights) {
+        write_cli_styled_line(
+            &mut stdout,
+            line,
+            &plain_line_from_styled(line),
+            highlights,
+            rt,
+            1.0,
+        )?;
     }
     write!(stdout, "\x1b[?25l")?;
     for _ in 0..height {
@@ -172,14 +202,14 @@ fn animate_cli_styled_output(lines: &[Vec<CliStyledChar>], rt: &Runtime) -> Resu
     for frame in 0..=rt.frames {
         write!(stdout, "\x1b[{height}A")?;
         let progress = frame as f32 / rt.frames.max(1) as f32;
-        for (row, line) in tail_lines.iter().enumerate() {
+        for (row, (line, highlights)) in tail_lines.iter().zip(tail_highlights).enumerate() {
             let plain = plain_line_from_styled(line);
             let rendered = if frame == rt.frames {
                 plain
             } else {
                 render_cli_frame(&plain, frame, row, tail_lines.len(), rt.frames, rt.effect)
             };
-            write_cli_styled_line(&mut stdout, line, &rendered, rt, progress)?;
+            write_cli_styled_line(&mut stdout, line, &rendered, highlights, rt, progress)?;
         }
         for _ in tail_lines.len()..height {
             writeln!(stdout)?;
@@ -191,6 +221,37 @@ fn animate_cli_styled_output(lines: &[Vec<CliStyledChar>], rt: &Runtime) -> Resu
     write!(stdout, "\x1b[?25h")?;
     stdout.flush()?;
     Ok(true)
+}
+
+fn render_cli_without_animation(
+    text: &str,
+    rt: &Runtime,
+    highlight_colors: &[Vec<Option<Rgb>>],
+) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    if cli_preserves_source_ansi(rt) {
+        let lines = split_ansi_lines_preserve_tail(text);
+        for (line, highlights) in lines.iter().zip(highlight_colors) {
+            write_cli_styled_line(
+                &mut stdout,
+                line,
+                &plain_line_from_styled(line),
+                highlights,
+                rt,
+                1.0,
+            )?;
+        }
+    } else {
+        let lines = split_ansi_plain_lines_preserve_tail(text);
+        let settled_fg = rt
+            .cli_settled_color
+            .unwrap_or_else(|| rt.theme.default_fg_rgb());
+        for (line, highlights) in lines.iter().zip(highlight_colors) {
+            write_cli_colored_line(&mut stdout, line, highlights, settled_fg)?;
+        }
+    }
+    stdout.flush()?;
+    Ok(())
 }
 
 fn debug_cli_animation(
@@ -228,18 +289,40 @@ fn cli_frame_fg(rt: &Runtime, settled_fg: Rgb, progress: f32) -> Rgb {
     fade_rgb_for_progress(rt, target, progress)
 }
 
-fn write_cli_colored_line(stdout: &mut io::StdoutLock<'_>, line: &str, fg: Rgb) -> io::Result<()> {
-    write!(
-        stdout,
-        "\x1b[38;2;{};{};{}m{}\x1b[0m\x1b[K\r\n",
-        fg.0, fg.1, fg.2, line
-    )
+fn write_cli_colored_line(
+    stdout: &mut io::StdoutLock<'_>,
+    line: &str,
+    highlights: &[Option<Rgb>],
+    fg: Rgb,
+) -> io::Result<()> {
+    let mut highlighted = false;
+    write!(stdout, "\x1b[38;2;{};{};{}m", fg.0, fg.1, fg.2)?;
+    for (idx, ch) in line.chars().enumerate() {
+        let next = highlights.get(idx).copied().flatten();
+        match (highlighted, next) {
+            (false, Some(rgb)) => {
+                write!(stdout, "\x1b[48;2;{};{};{}m", rgb.0, rgb.1, rgb.2)?;
+                highlighted = true;
+            }
+            (true, None) => {
+                write!(stdout, "\x1b[49m")?;
+                highlighted = false;
+            }
+            (true, Some(rgb)) => {
+                write!(stdout, "\x1b[48;2;{};{};{}m", rgb.0, rgb.1, rgb.2)?;
+            }
+            (false, None) => {}
+        }
+        write!(stdout, "{ch}")?;
+    }
+    write!(stdout, "\x1b[0m\x1b[K\r\n")
 }
 
 fn write_cli_styled_line(
     stdout: &mut io::StdoutLock<'_>,
     source: &[CliStyledChar],
     rendered: &str,
+    highlights: &[Option<Rgb>],
     rt: &Runtime,
     progress: f32,
 ) -> io::Result<()> {
@@ -252,7 +335,10 @@ fn write_cli_styled_line(
         let style = if ch == ' ' && !source_cell.ch.is_whitespace() {
             None
         } else {
-            Some(source_cell.style)
+            Some(merge_cli_highlight_style(
+                source_cell.style,
+                highlights.get(idx).copied().flatten(),
+            ))
         };
         if style_state != style {
             write!(stdout, "\x1b[0m")?;
@@ -264,6 +350,14 @@ fn write_cli_styled_line(
         write!(stdout, "{ch}")?;
     }
     write!(stdout, "\x1b[0m\x1b[K\r\n")
+}
+
+fn merge_cli_highlight_style(style: CliStyle, highlight: Option<Rgb>) -> CliStyle {
+    let mut merged = style;
+    if let Some(rgb) = highlight {
+        merged.bg = CliDisplayColor::Rgb(rgb);
+    }
+    merged
 }
 
 fn write_cli_style(
@@ -1088,6 +1182,7 @@ mod tests {
             cli_gradient_start: None,
             cli_gradient_end: None,
             no_theme_after_reveal: false,
+            highlight_rules: Vec::new(),
         }
     }
 }
