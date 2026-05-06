@@ -439,6 +439,7 @@ struct ResizeWatcher {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(super) struct SignalCleanupConfig {
     pub(super) leave_alt_screen: bool,
     pub(super) reset_live_sequences: bool,
