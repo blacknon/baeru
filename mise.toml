@@ -1,23 +1,70 @@
+[tasks.gif-build]
+description = "Build baeru before generating GIFs"
+run = "cargo build --locked"
+
+[tasks.gif-cli-demo]
+description = "Generate assets/cli-demo.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/cli-demo.tape"
+
+[tasks.gif-cli-coalesce]
+description = "Generate assets/cli-coalesce.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/cli-coalesce.tape"
+
+[tasks.gif-cli-sweep]
+description = "Generate assets/cli-sweep.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/cli-sweep.tape"
+
+[tasks.gif-cli-fade]
+description = "Generate assets/cli-fade.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/cli-fade.tape"
+
 [tasks.gif-cli]
-description = "Generate the CLI demo GIF with VHS"
-run = """
-cargo build --locked
-vhs assets/cli-demo.tape
-vhs assets/cli-coalesce.tape
-vhs assets/cli-sweep.tape
-vhs assets/cli-fade.tape
-"""
+description = "Generate all CLI demo GIFs"
+depends = [
+  "gif-cli-demo",
+  "gif-cli-coalesce",
+  "gif-cli-sweep",
+  "gif-cli-fade",
+]
+
+[tasks.gif-htop-demo]
+description = "Generate assets/htop-demo.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/htop-demo.tape"
+
+[tasks.gif-reveal-coalesce]
+description = "Generate assets/reveal-coalesce.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/reveal-coalesce.tape"
+
+[tasks.gif-reveal-sweep]
+description = "Generate assets/reveal-sweep.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/reveal-sweep.tape"
+
+[tasks.gif-reveal-fade]
+description = "Generate assets/reveal-fade.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/reveal-fade.tape"
+
+[tasks.gif-reveal-plain]
+description = "Generate assets/reveal-plain.gif with VHS"
+depends = ["gif-build"]
+run = "vhs assets/reveal-plain.tape"
 
 [tasks.gif-htop]
-description = "Generate the htop demo GIF with VHS"
-run = """
-cargo build --locked
-vhs assets/htop-demo.tape
-vhs assets/reveal-coalesce.tape
-vhs assets/reveal-sweep.tape
-vhs assets/reveal-fade.tape
-vhs assets/reveal-plain.tape
-"""
+description = "Generate all htop and reveal GIFs"
+depends = [
+  "gif-htop-demo",
+  "gif-reveal-coalesce",
+  "gif-reveal-sweep",
+  "gif-reveal-fade",
+  "gif-reveal-plain",
+]
 
 [tasks.gif]
 description = "Generate all README demo GIFs"

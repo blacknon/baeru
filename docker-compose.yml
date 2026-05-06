@@ -1,0 +1,12 @@
+services:
+  baeru:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: baeru:dev
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: ["bash"]

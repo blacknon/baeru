@@ -1,9 +1,11 @@
 mod cli_backend;
 mod config;
+mod highlight;
 mod keymap;
 mod model;
 mod support;
 mod theme;
+mod transform;
 mod tui_backend;
 
 use anyhow::{anyhow, Result};

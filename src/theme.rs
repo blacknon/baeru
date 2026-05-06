@@ -154,6 +154,15 @@ pub(crate) fn lerp(a: u8, b: u8, k: f32) -> u8 {
         .clamp(0.0, 255.0) as u8
 }
 
+pub(crate) fn darken(rgb: Rgb, factor: f32) -> Rgb {
+    let k = factor.clamp(0.0, 1.0);
+    Rgb(
+        (rgb.0 as f32 * k).round().clamp(0.0, 255.0) as u8,
+        (rgb.1 as f32 * k).round().clamp(0.0, 255.0) as u8,
+        (rgb.2 as f32 * k).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
 pub(crate) fn parse_hex(s: &str) -> Option<Rgb> {
     let hex = s.strip_prefix('#').unwrap_or(s);
     if hex.len() != 6 {

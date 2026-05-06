@@ -7,11 +7,18 @@ profiles:
       - reveal
       - live_color
       - keymap
-    effect: coalesce
+      - live_render
+    # effect: matrix
+    # effect: coalesce
+    effect: scatter
+    animation_color_fade: true
+    animation_color_darken_factor: 0.02
+    live_render_duration_ms: 620
+    live_render_mouse_quiet_ms: 280
     keymap_file: examples/keymaps/htop-vim.yml
-    theme_file: examples/themes/jirai-pink.yml
+    theme_file: examples/themes/eva-unit-01-htop.yml
     capture_ms: 360
-    duration_ms: 720
+    duration_ms: 1120
     frames: 24
 
   - name: lazygit-matrix
@@ -53,10 +60,12 @@ profiles:
     features:
       - inline_animation
     effect: coalesce
-    theme_file: themes/matrix-green.yml
-    cli_settled_color: "#b6ffd0"
-    cli_gradient_start: "#004d26"
-    cli_gradient_end: "#eafff2"
+    # theme_file: themes/matrix-green.yml
+    # cli_settled_color: "#b6ffd0"
+    # cli_gradient_start: "#004d26"
+    # cli_gradient_end: "#eafff2"
+    animation_color_fade: true
+    animation_color_darken_factor: 0.02
     duration_ms: 900
     frames: 20
     # max_lines: 16
@@ -98,6 +107,47 @@ profiles:
     frames: 18
     max_lines: 20
     max_bytes: 120000
+    highlight_rules:
+      - key: test-failure
+        pattern: "(?i)error|failed|panic"
+        color: "#ffff00"
+        capture_cli_text: true
+
+  - name: onefetch
+    match:
+      command: onefetch
+    backend: cli
+    features:
+      - inline_animation
+    # effect: matrix
+    # theme_file: examples/themes/jirai-pink.yml
+    animation_color_fade: true
+    animation_color_darken_factor: 0.02
+    live_render_duration_ms: 180
+    live_render_mouse_quiet_ms: 280
+    duration_ms: 900
+    frames: 18
+
+  - name: neofetch
+    match:
+      command: neofetch
+    backend: cli
+    features:
+      - inline_animation
+    # effect: matrix
+    # theme_file: examples/themes/jirai-pink.yml
+    animation_color_fade: true
+    animation_color_darken_factor: 0.02
+    live_render_duration_ms: 180
+    live_render_mouse_quiet_ms: 280
+    duration_ms: 900
+    frames: 18
+    replace_rules:
+      - pattern: "Debian GNU/Linux"
+        replacement: "Distro"
+    mask_rules:
+      - pattern: "(?i)kernel: .*"
+        mask_char: "#"
 
   - name: htop-live-render-experimental
     match:
@@ -106,4 +156,15 @@ profiles:
     features:
       - live_render
       - keymap
-    keymap_file: examples/keymaps/htop-vim.yml
+    effect: coalesce
+    # keymap_file: examples/keymaps/htop-vim.yml
+    live_render_duration_ms: 90
+    live_render_mouse_quiet_ms: 180
+    animation_color_fade: true
+    animation_color_darken_factor: 0.22
+    highlight_rules:
+      - key: high-load
+        pattern: "(?i)load average|running"
+        color: "#ffff00"
+        capture_tui_screenshot: true
+        output_prefix: "htop-{capture_kind}-"

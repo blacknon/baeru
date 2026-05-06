@@ -1,4 +1,4 @@
-Output assets/htop-demo.gif
+Output assets/htop-more-demo.gif
 
 Require ./target/debug/baeru
 Require htop
@@ -12,27 +12,13 @@ Set Padding 24
 Set CursorBlink false
 Set TypingSpeed 40ms
 
-# Start normal htop
-Type "# 1st step: Run htop only"
-Enter
-Sleep 500ms
-Type "htop"
-Enter
-Sleep 6s
-
-# exit htop
-Type "q"
-Sleep 1s
-Enter
-Sleep 1s
-
 # Start baeru htop
-Type "# 2nd step: Run htop via baeru"
+Type "# Run htop via baeru"
 Enter
 Sleep 500ms
-Type "./target/debug/baeru -M blacknon -- htop"
+Type "./target/debug/baeru -M blacknon -e iTerm -- htop"
 Enter
-Sleep 6s
+Sleep 20s
 
 # show help
 Type "?"
@@ -40,8 +26,8 @@ Sleep 2s
 
 # return
 Escape
-Sleep 4s
+Sleep 6s
 
 # exit
 Ctrl+C
-Sleep 2s
+Sleep 1s

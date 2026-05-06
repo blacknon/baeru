@@ -10,19 +10,39 @@ pub(crate) fn read_keymap(path: &Path) -> Result<KeymapFile> {
 pub(crate) struct KeyMapper {
     rules: Vec<(Vec<u8>, Vec<u8>)>,
     pending: Vec<u8>,
+    has_escape_rules: bool,
 }
 
 impl KeyMapper {
     pub(crate) fn new(map: HashMap<Vec<u8>, Vec<u8>>) -> Self {
         let mut rules: Vec<_> = map.into_iter().collect();
         rules.sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
+        let has_escape_rules = rules.iter().any(|(from, _)| from.starts_with(b"\x1b"));
         Self {
             rules,
             pending: Vec::new(),
+            has_escape_rules,
         }
     }
 
     pub(crate) fn push_bytes(&mut self, input: &[u8]) -> Vec<u8> {
+        if !self.has_escape_rules {
+            if self.pending == b"\x1b" {
+                self.pending.extend_from_slice(input);
+                return self.drain_ready(true);
+            }
+            if input == b"\x1b" {
+                let mut out = self.drain_ready(true);
+                self.pending.extend_from_slice(input);
+                out.shrink_to_fit();
+                return out;
+            }
+            if input.starts_with(b"\x1b") {
+                let mut out = self.drain_ready(true);
+                out.extend_from_slice(input);
+                return out;
+            }
+        }
         self.pending.extend_from_slice(input);
         self.drain_ready(false)
     }
@@ -191,6 +211,37 @@ mod tests {
 
         assert!(partial.is_empty());
         assert_eq!(flushed, b"ESC".to_vec());
+    }
+
+    #[test]
+    fn key_mapper_passthroughs_escape_sequences_without_escape_rules() {
+        let mut mapper = KeyMapper::new(HashMap::from([(b"j".to_vec(), b"\x1b[B".to_vec())]));
+
+        let mapped = mapper.push_bytes(b"\x1b[A");
+
+        assert_eq!(mapped, b"\x1b[A".to_vec());
+    }
+
+    #[test]
+    fn key_mapper_flushes_pending_before_passthrough_escape_sequence() {
+        let mut mapper = KeyMapper::new(HashMap::from([(b"jj".to_vec(), b"X".to_vec())]));
+
+        let first = mapper.push_bytes(b"j");
+        let second = mapper.push_bytes(b"\x1b[A");
+
+        assert!(first.is_empty());
+        assert_eq!(second, b"j\x1b[A".to_vec());
+    }
+
+    #[test]
+    fn key_mapper_passthroughs_split_escape_sequences_without_escape_rules() {
+        let mut mapper = KeyMapper::new(HashMap::from([(b"j".to_vec(), b"\x1b[B".to_vec())]));
+
+        let first = mapper.push_bytes(b"\x1b");
+        let second = mapper.push_bytes(b"OA");
+
+        assert!(first.is_empty());
+        assert_eq!(second, b"\x1bOA".to_vec());
     }
 
     #[test]
