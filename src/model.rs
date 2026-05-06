@@ -176,7 +176,12 @@ pub(crate) struct TransformArgs {
 }
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "baeru", version, about = "Make existing terminal apps glow up")]
+#[command(
+    name = "baeru",
+    version,
+    about = "Make existing terminal apps glow up",
+    trailing_var_arg = true
+)]
 pub(crate) struct Cli {
     #[command(flatten)]
     pub(crate) selection: SelectionArgs,
@@ -196,7 +201,7 @@ pub(crate) struct Cli {
     #[command(flatten)]
     pub(crate) transform: TransformArgs,
 
-    #[arg(last = true, allow_hyphen_values = true)]
+    #[arg(allow_hyphen_values = true)]
     pub(crate) command: Vec<OsString>,
 }
 

@@ -82,7 +82,7 @@ cargo install baeru
 git clone https://github.com/blacknon/baeru
 cd baeru
 cargo build --release
-./target/release/baeru -- htop
+./target/release/baeru htop
 ```
 
 ## Quick start
@@ -90,23 +90,23 @@ cargo build --release
 Run using the default profile lookup:
 
 ```bash
-cargo run -- -- htop
-cargo run -- -- lazygit
-cargo run -- -- ls -la
+cargo run -- htop
+cargo run -- lazygit
+cargo run -- ls -la
 ```
 
 Explicit examples:
 
 ```bash
-cargo run -- -m reveal -- htop
-cargo run -- -m color_live -t examples/themes/jirai-pink.yml -- htop
-cargo run -- -m reveal -t examples/themes/jirai-pink.yml -k examples/keymaps/htop-vim.yml -- htop
-cargo run -- -m live_render -t examples/themes/jirai-pink.yml -- htop
-cargo run -- -b cli -- ls -la
-cargo run -- -b cli -- git status
-cargo run -- -b cli -e '(?i)error' -e 'timeout' -- journalctl -n 50
-cargo run -- -b cli -R '(?i)token=[A-Za-z0-9_]+' 'token=[redacted]' -- env
-cargo run -- -b cli -M '(?i)password=.*' -- sh -c 'printf \"password=hunter2\\n\"'
+cargo run -- -m reveal htop
+cargo run -- -m color_live -t examples/themes/jirai-pink.yml htop
+cargo run -- -m reveal -t examples/themes/jirai-pink.yml -k examples/keymaps/htop-vim.yml htop
+cargo run -- -m live_render -t examples/themes/jirai-pink.yml htop
+cargo run -- -b cli ls -la
+cargo run -- -b cli git status
+cargo run -- -b cli -e '(?i)error' -e 'timeout' journalctl -n 50
+cargo run -- -b cli -R '(?i)token=[A-Za-z0-9_]+' 'token=[redacted]' env
+cargo run -- -b cli -M '(?i)password=.*' sh -c 'printf \"password=hunter2\\n\"'
 ```
 
 Useful short options include `-b` for `--backend`, `-m` for `--mode`, `-E` for `--effect`, `-c` for `--config-file`, `-t` for `--theme-file`, and `-k` for `--keymap-file`.
@@ -121,14 +121,14 @@ If no `--config-file` is given, `baeru` looks for config files in this order:
 For example:
 
 ```bash
-cargo run -- -- htop
-cargo run -- -- ls -la
+cargo run -- htop
+cargo run -- ls -la
 ```
 
 You can also point to a config explicitly:
 
 ```bash
-cargo run -- -c baeru.yml -- htop
+cargo run -- -c baeru.yml htop
 ```
 
 If no command is specified and stdin is a terminal, `htop` is used as the default PoC target:
@@ -144,8 +144,8 @@ cargo run
 For interactive terminal applications such as `htop` or `lazygit`.
 
 ```bash
-baeru -b tui -- htop
-baeru -m reveal -- htop
+baeru -b tui htop
+baeru -m reveal htop
 ```
 
 ### `cli`
@@ -153,8 +153,8 @@ baeru -m reveal -- htop
 For ordinary commands such as `ls`, `df`, or `git status`.
 
 ```bash
-baeru -b cli -- ls -la
-baeru -b cli -- git status
+baeru -b cli ls -la
+baeru -b cli git status
 printf 'hello\nworld\n' | baeru -b cli
 ```
 
@@ -188,8 +188,8 @@ For plain passthrough behavior without added effects.
 Starts the target command in a PTY, captures the initial screen briefly, renders a startup animation, then switches to PTY passthrough.
 
 ```bash
-baeru --mode reveal -- htop
-baeru --mode reveal --capture-ms 420 --duration-ms 900 -- htop
+baeru --mode reveal htop
+baeru --mode reveal --capture-ms 420 --duration-ms 900 htop
 ```
 
 Sample GIFs:
@@ -215,7 +215,7 @@ Sample GIFs:
 Passes PTY output through while rewriting ANSI SGR colors.
 
 ```bash
-baeru --mode color-live --theme-file examples/themes/jirai-pink.yml -- htop
+baeru --mode color-live --theme-file examples/themes/jirai-pink.yml htop
 ```
 
 Current approaches include:
@@ -251,8 +251,8 @@ Supported effects:
 CLI option:
 
 ```bash
-baeru --backend cli -e '(?i)error' -e 'timeout' -- journalctl -n 50
-baeru --backend cli -e '(?i)error' --highlight-capture-cli-text --highlight-command echo --highlight-command matched -- journalctl -n 50
+baeru --backend cli -e '(?i)error' -e 'timeout' journalctl -n 50
+baeru --backend cli -e '(?i)error' --highlight-capture-cli-text --highlight-command echo --highlight-command matched journalctl -n 50
 ```
 
 - `-e`, `--highlight`
@@ -332,8 +332,8 @@ Triggered commands receive context through environment variables:
 CLI options:
 
 ```bash
-baeru -b cli -R '(?i)token=[A-Za-z0-9_]+' 'token=[redacted]' -- env
-baeru -b cli -M '(?i)password=.*' -- sh -c 'printf "password=hunter2\n"'
+baeru -b cli -R '(?i)token=[A-Za-z0-9_]+' 'token=[redacted]' env
+baeru -b cli -M '(?i)password=.*' sh -c 'printf "password=hunter2\n"'
 ```
 
 - `-R`, `--replace <PATTERN> <TEXT>`
@@ -370,8 +370,8 @@ profiles:
 These transforms are applied to CLI output and to TUI rendering paths such as `reveal` and `live_render`.
 
 ```bash
-baeru --backend cli --effect coalesce -- ls -la
-baeru --backend cli --effect sweep -- git status
+baeru --backend cli --effect coalesce ls -la
+baeru --backend cli --effect sweep git status
 ```
 
 Sample GIFs:
@@ -393,7 +393,7 @@ Sample GIFs:
 Rebuilds the target TUI screen from VT100 state, redraws it from `baeru`, and animates changed cells during live updates.
 
 ```bash
-baeru --mode live_render --theme-file examples/themes/jirai-pink.yml -- htop
+baeru --mode live_render --theme-file examples/themes/jirai-pink.yml htop
 ```
 
 This mode is still intentionally experimental, but it is no longer just a full-screen redraw toy.
