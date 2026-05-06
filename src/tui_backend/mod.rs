@@ -229,6 +229,17 @@ fn render_initial_live_frame(
             highlight: &no_screen_changed(&initial.initial_screen),
         },
     )?;
+    if !initial.initial_highlights.triggers.is_empty() {
+        flash_highlight_markers(
+            stdout,
+            LiveRenderScene {
+                cells: &initial.initial_screen,
+                state: &initial.initial_state,
+                highlight_colors: Some(&initial.initial_highlights.colors),
+                theme: &rt.theme,
+            },
+        )?;
+    }
 
     Ok(LiveRenderRuntimeState {
         cols: initial.cols,
@@ -332,6 +343,17 @@ fn process_live_render_chunk(
             highlight: &changed,
         },
     )?;
+    if !new_triggers.is_empty() {
+        flash_highlight_markers(
+            stdout,
+            LiveRenderScene {
+                cells: &current,
+                state: &terminal_state,
+                highlight_colors: Some(&current_highlights.colors),
+                theme: &rt.theme,
+            },
+        )?;
+    }
 
     state.prev = Some(current);
     state.frame = state.frame.wrapping_add(1);
@@ -444,6 +466,18 @@ fn run_reveal(rt: Runtime) -> Result<()> {
         },
         TerminalGuard::enter,
     )?;
+    if !highlight_eval.triggers.is_empty() {
+        let mut stdout = io::stdout();
+        flash_highlight_markers(
+            &mut stdout,
+            LiveRenderScene {
+                cells: &screen,
+                state: &collect_terminal_state(parser.screen(), rows, cols),
+                highlight_colors: Some(&highlight_eval.colors),
+                theme: &rt.theme,
+            },
+        )?;
+    }
 
     let keymap = if rt.features.contains(&Feature::Keymap) {
         rt.keymap.clone()
@@ -462,7 +496,6 @@ fn run_reveal(rt: Runtime) -> Result<()> {
         rt.highlight_rules.clone(),
         Some(initial_output),
         emulate_alt_screen,
-        maybe_dispatch_passthrough_highlights,
     )
 }
 
@@ -480,7 +513,6 @@ fn run_pty_passthrough(
         rt.highlight_rules.clone(),
         None,
         false,
-        maybe_dispatch_passthrough_highlights,
     )
 }
 

@@ -1,5 +1,5 @@
 use crate::{
-    highlight::TriggerState,
+    highlight::{dispatch_tui_triggers, evaluate_lines, filter_new_triggers, TriggerState},
     keymap::KeyMapper,
     model::{
         Theme, ALT_SCREEN_ENTER_SEQUENCES, LIVE_RENDER_INPUT_MODE_DISABLE_SEQUENCES,
@@ -30,6 +30,11 @@ use std::{
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
+};
+
+use super::render::{
+    collect_screen, collect_terminal_state, flash_highlight_markers, screen_lines, screen_to_svg,
+    LiveRenderScene,
 };
 
 pub(super) struct PtySession {
@@ -83,11 +88,6 @@ pub(super) fn continue_passthrough(
     highlight_rules: Vec<crate::model::HighlightRule>,
     initial_output: Option<Vec<u8>>,
     leave_alt_screen_on_exit: bool,
-    dispatch_highlights: impl Fn(
-        &vt100::Screen,
-        &[crate::model::HighlightRule],
-        &mut TriggerState,
-    ) -> Result<()>,
 ) -> Result<()> {
     let use_raw = io::stdin().is_terminal() && io::stdout().is_terminal();
     let _guard = TerminalGuard::enter(use_raw)?;
@@ -99,7 +99,7 @@ pub(super) fn continue_passthrough(
     let _input_handle = spawn_input_forwarder(writer.clone(), keymap, None);
 
     let mut out = io::stdout();
-    let mut rewriter = theme.map(SgrRewriter::new);
+    let mut rewriter = theme.clone().map(SgrRewriter::new);
     let mut parser = size()
         .ok()
         .map(|(cols, rows)| vt100::Parser::new(rows, cols, 0));
@@ -107,7 +107,13 @@ pub(super) fn continue_passthrough(
     if let Some(initial) = initial_output.as_deref() {
         if let Some(parser) = parser.as_mut() {
             parser.process(initial);
-            dispatch_highlights(parser.screen(), &highlight_rules, &mut trigger_state)?;
+            maybe_flash_tui_highlights(
+                &mut out,
+                parser.screen(),
+                theme.as_ref(),
+                &highlight_rules,
+                &mut trigger_state,
+            )?;
         }
         if let Some(rw) = rewriter.as_mut() {
             let bytes = rw.feed(initial);
@@ -124,7 +130,13 @@ pub(super) fn continue_passthrough(
             Ok(n) => {
                 if let Some(parser) = parser.as_mut() {
                     parser.process(&buf[..n]);
-                    dispatch_highlights(parser.screen(), &highlight_rules, &mut trigger_state)?;
+                    maybe_flash_tui_highlights(
+                        &mut out,
+                        parser.screen(),
+                        theme.as_ref(),
+                        &highlight_rules,
+                        &mut trigger_state,
+                    )?;
                 }
                 if let Some(rw) = rewriter.as_mut() {
                     let bytes = rw.feed(&buf[..n]);
@@ -144,6 +156,41 @@ pub(super) fn continue_passthrough(
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
     }
     exit_with_status(status.exit_code() as i32);
+}
+
+fn maybe_flash_tui_highlights(
+    out: &mut io::Stdout,
+    screen: &vt100::Screen,
+    theme: Option<&Theme>,
+    highlight_rules: &[crate::model::HighlightRule],
+    trigger_state: &mut TriggerState,
+) -> Result<()> {
+    if highlight_rules.is_empty() {
+        return Ok(());
+    }
+
+    let rows = screen.size().0;
+    let cols = screen.size().1;
+    let cells = collect_screen(screen, rows, cols, theme);
+    let lines = screen_lines(&cells);
+    let evaluation = evaluate_lines(&lines, highlight_rules);
+    let new_triggers = filter_new_triggers(trigger_state, evaluation.triggers);
+    dispatch_tui_triggers(
+        &new_triggers,
+        Some(&screen_to_svg(&cells, Some(&evaluation.colors))),
+    )?;
+    if !new_triggers.is_empty() {
+        flash_highlight_markers(
+            out,
+            LiveRenderScene {
+                cells: &cells,
+                state: &collect_terminal_state(screen, rows, cols),
+                highlight_colors: Some(&evaluation.colors),
+                theme: theme.unwrap_or(&Theme::default()),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn contains_alt_screen_enter_sequence(bytes: &[u8]) -> bool {

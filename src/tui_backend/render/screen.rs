@@ -1,9 +1,4 @@
-use crate::{
-    highlight::{dispatch_tui_triggers, evaluate_lines, filter_new_triggers, TriggerState},
-    model::{Rgb, Theme},
-    transform::transform_line,
-};
-use anyhow::Result;
+use crate::{model::{Rgb, Theme}, transform::transform_line};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StyledCell {
@@ -133,27 +128,6 @@ pub(crate) fn apply_transforms_to_cells(
             row[cell_idx].text = ch.to_string();
         }
     }
-}
-
-pub(crate) fn maybe_dispatch_passthrough_highlights(
-    screen: &vt100::Screen,
-    highlight_rules: &[crate::model::HighlightRule],
-    trigger_state: &mut TriggerState,
-) -> Result<()> {
-    if highlight_rules.is_empty() {
-        return Ok(());
-    }
-    let rows = screen.size().0;
-    let cols = screen.size().1;
-    let cells = collect_screen(screen, rows, cols, None);
-    let lines = screen_lines(&cells);
-    let evaluation = evaluate_lines(&lines, highlight_rules);
-    let new_triggers = filter_new_triggers(trigger_state, evaluation.triggers);
-    dispatch_tui_triggers(
-        &new_triggers,
-        Some(&screen_to_svg(&cells, Some(&evaluation.colors))),
-    )?;
-    Ok(())
 }
 
 pub(crate) fn screen_to_svg(

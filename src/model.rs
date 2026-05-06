@@ -290,7 +290,7 @@ pub(crate) struct MaskRuleConfig {
     pub(crate) mask_char: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub(crate) struct Theme {
     #[serde(rename = "name")]
     pub(crate) _name: Option<String>,

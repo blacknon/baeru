@@ -10,7 +10,11 @@ use crossterm::{
     execute,
     terminal::{Clear, ClearType, ScrollDown, ScrollUp},
 };
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    thread,
+    time::Duration,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct RevealTuning {
@@ -321,6 +325,46 @@ pub(crate) fn draw_live_screen(
             }
         }
         write!(out, "\x1b[0m")?;
+    }
+    execute!(
+        out,
+        crossterm::cursor::MoveTo(scene.state.cursor_col, scene.state.cursor_row)
+    )?;
+    if scene.state.cursor_visible {
+        execute!(out, Show)?;
+    } else {
+        execute!(out, Hide)?;
+    }
+    out.flush()
+}
+
+pub(crate) fn flash_highlight_markers(
+    out: &mut io::Stdout,
+    scene: LiveRenderScene<'_>,
+) -> io::Result<()> {
+    let spans = highlight_spans(scene);
+    if spans.is_empty() {
+        return Ok(());
+    }
+
+    let phases = [
+        (Rgb(255, 240, 120), Rgb(20, 12, 0)),
+        (Rgb(255, 120, 220), Rgb(35, 0, 30)),
+    ];
+
+    for (bg, fg) in phases {
+        for span in &spans {
+            draw_highlight_span_flash(out, scene, span, bg, fg)?;
+        }
+        out.flush()?;
+        thread::sleep(Duration::from_millis(80));
+    }
+
+    let mut restored_rows = spans.iter().map(|span| span.row).collect::<Vec<_>>();
+    restored_rows.sort_unstable();
+    restored_rows.dedup();
+    for row in restored_rows {
+        draw_live_row(out, scene, row)?;
     }
     execute!(
         out,
@@ -645,6 +689,128 @@ fn write_cell(
         *style_state = Some(next_style);
     }
     write!(out, "{}", text)
+}
+
+fn draw_live_row(out: &mut io::Stdout, scene: LiveRenderScene<'_>, row: usize) -> io::Result<()> {
+    let Some(cells) = scene.cells.get(row) else {
+        return Ok(());
+    };
+
+    execute!(out, crossterm::cursor::MoveTo(0, row as u16))?;
+    let mut style_state = None;
+    for (col, cell) in cells.iter().enumerate() {
+        if cell.wide_continuation {
+            continue;
+        }
+        let mut stable = cell.clone();
+        if let Some(rgb) = scene
+            .highlight_colors
+            .and_then(|rows| rows.get(row))
+            .and_then(|row_colors| row_colors.get(col))
+            .copied()
+            .flatten()
+        {
+            stable.bg = DisplayColor::Rgb(rgb);
+        }
+        write_cell(out, &stable, &stable.text, &mut style_state)?;
+    }
+    write!(out, "\x1b[0m")
+}
+
+#[derive(Clone, Copy)]
+struct HighlightSpan {
+    row: usize,
+    start: usize,
+    end: usize,
+    left_marker: Option<usize>,
+    right_marker: Option<usize>,
+}
+
+fn highlight_spans(scene: LiveRenderScene<'_>) -> Vec<HighlightSpan> {
+    let mut spans = Vec::new();
+    let Some(colors) = scene.highlight_colors else {
+        return spans;
+    };
+
+    for (row_idx, row_colors) in colors.iter().enumerate() {
+        let mut col = 0;
+        while col < row_colors.len() {
+            if row_colors[col].is_none() {
+                col += 1;
+                continue;
+            }
+
+            let start = col;
+            while col < row_colors.len() && row_colors[col].is_some() {
+                col += 1;
+            }
+            let end = col.saturating_sub(1);
+
+            spans.push(HighlightSpan {
+                row: row_idx,
+                start,
+                end,
+                left_marker: marker_slot(scene.cells, row_idx, start, true),
+                right_marker: marker_slot(scene.cells, row_idx, end, false),
+            });
+        }
+    }
+
+    spans
+}
+
+fn draw_highlight_span_flash(
+    out: &mut io::Stdout,
+    scene: LiveRenderScene<'_>,
+    span: &HighlightSpan,
+    bg: Rgb,
+    fg: Rgb,
+) -> io::Result<()> {
+    let Some(row_cells) = scene.cells.get(span.row) else {
+        return Ok(());
+    };
+
+    let left = span.left_marker.unwrap_or(span.start);
+    let right = span.right_marker.unwrap_or(span.end);
+    execute!(out, crossterm::cursor::MoveTo(left as u16, span.row as u16))?;
+
+    let mut style_state = None;
+    for col in left..=right {
+        let Some(cell) = row_cells.get(col) else {
+            continue;
+        };
+        if cell.wide_continuation {
+            continue;
+        }
+
+        let text = if span.left_marker == Some(col) || span.right_marker == Some(col) {
+            "✦"
+        } else {
+            cell.text.as_str()
+        };
+        let mut flashed = cell.clone();
+        flashed.bold = true;
+        flashed.fg = DisplayColor::Rgb(fg);
+        flashed.bg = DisplayColor::Rgb(bg);
+        write_cell(out, &flashed, text, &mut style_state)?;
+    }
+    write!(out, "\x1b[0m")
+}
+
+fn marker_slot(
+    cells: &[Vec<StyledCell>],
+    row: usize,
+    edge_col: usize,
+    left_side: bool,
+) -> Option<usize> {
+    let row_cells = cells.get(row)?;
+    let candidate = if left_side {
+        edge_col.checked_sub(1)?
+    } else {
+        edge_col.checked_add(1)?
+    };
+    let cell = row_cells.get(candidate)?;
+    (!cell.wide_continuation).then_some(candidate)
 }
 
 fn write_display_color(out: &mut io::Stdout, fg: bool, color: DisplayColor) -> io::Result<()> {
