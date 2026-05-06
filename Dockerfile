@@ -17,12 +17,17 @@ FROM debian:bookworm-slim AS runtime
 ENV TERM=xterm-256color \
     COLORTERM=truecolor \
     LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
+    LC_ALL=C.UTF-8 \
+    CHROME_PATH=/usr/bin/chromium \
+    CHROMIUM_PATH=/usr/bin/chromium \
+    VHS_NO_SANDBOX=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
+        chromium \
+        chromium-sandbox \
         ffmpeg \
         git \
         gnupg \
@@ -32,6 +37,17 @@ RUN apt-get update \
         curl \
         wget \
     && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+        amd64) ttyd_asset="ttyd.x86_64" ;; \
+        arm64) ttyd_asset="ttyd.aarch64" ;; \
+        *) echo "unsupported ttyd architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/tsl0922/ttyd/releases/latest/download/${ttyd_asset}" \
+        -o /usr/local/bin/ttyd; \
+    chmod +x /usr/local/bin/ttyd
 
 RUN mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://repo.charm.sh/apt/gpg.key \

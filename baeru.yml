@@ -13,10 +13,10 @@ profiles:
     effect: scatter
     animation_color_fade: true
     animation_color_darken_factor: 0.02
-    live_render_duration_ms: 120
+    live_render_duration_ms: 620
     live_render_mouse_quiet_ms: 280
     keymap_file: examples/keymaps/htop-vim.yml
-    theme_file: examples/themes/jirai-pink.yml
+    theme_file: examples/themes/eva-unit-01-htop.yml
     capture_ms: 360
     duration_ms: 1120
     frames: 24
@@ -113,6 +113,21 @@ profiles:
         color: "#ffff00"
         capture_cli_text: true
 
+  - name: onefetch
+    match:
+      command: onefetch
+    backend: cli
+    features:
+      - inline_animation
+    # effect: matrix
+    # theme_file: examples/themes/jirai-pink.yml
+    animation_color_fade: true
+    animation_color_darken_factor: 0.02
+    live_render_duration_ms: 180
+    live_render_mouse_quiet_ms: 280
+    duration_ms: 900
+    frames: 18
+
   - name: neofetch
     match:
       command: neofetch
@@ -123,7 +138,7 @@ profiles:
     # theme_file: examples/themes/jirai-pink.yml
     animation_color_fade: true
     animation_color_darken_factor: 0.02
-    live_render_duration_ms: 120
+    live_render_duration_ms: 180
     live_render_mouse_quiet_ms: 280
     duration_ms: 900
     frames: 18

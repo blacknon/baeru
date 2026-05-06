@@ -1,60 +1,191 @@
 baeru
 ===
 
+Make existing terminal commands look excessive on purpose.
+
+## About
+
 `baeru` is a Rust wrapper for existing terminal applications and command output.
-It adds animation, color transformation, and command-specific input behavior without patching the target application itself.
+It adds animation, color transformation, highlight reactions, and command-specific input behavior without patching the target application itself.
+
+It is intentionally not a minimal utility.
+The goal is to take existing commands like `htop`, `lazygit`, `ls`, or `journalctl` and make them feel theatrical.
 
 At the moment, `baeru` focuses on:
 
-- TUI startup reveal effects
-- live ANSI color rewriting
+- cinematic TUI startup reveals
+- live ANSI recoloring
 - per-command key remapping
 - inline animation for ordinary CLI output
+- regex-driven highlight reactions
 - profile-driven behavior from `baeru.yml`
 
 > [!NOTE]
-> `baeru` is still a PoC, but the current codebase is already usable as a base for experiments around `htop`, `lazygit`, and animated CLI wrappers.
+> `baeru` is still a PoC, but the project direction is clear:
+> this repository is for making existing commands louder, flashier, and more animated.
 
-## Demo
+### Releated project
+
+This repository focuses on expressiveness.
+While the ability to wrap and modify existing TUI applications has many potentials, this application focuses on "making existing TUI applications more flashy."
+We have also prepared another repository for testing more practical features, so please check that out as well if you're interested.
+
+- `baeru`
+  Built for animation, showy wrapping, and command-level visual experiments
+- [`twrap`](https://github.com/blacknon/twrap)
+  A more practical TUI-focused extraction for the terminal wrapping layer itself
+
+If you want the production-oriented TUI wrapper path without the whole "make it glow" direction, `twrap` is the place to look.
+
+## First look
 
 ### TUI reveal + live color
 
-![baeru htop demo](assets/htop-demo.gif)
+<img src="assets/htop-demo.gif" alt="baeru htop demo" width="820" />
 
-### CLI inline animation
+```yaml
+profiles:
+  - name: htop-jirai-vim
+    match:
+      command: htop
+    backend: tui
+    features:
+      - reveal
+      - live_color
+    effect: coalesce
+    effect: scatter
+    theme_file: examples/themes/jirai-pink.yml
+    capture_ms: 360
+    duration_ms: 1120
+    frames: 24
+```
 
-![baeru cli demo](assets/cli-demo.gif)
+### TUI reveal + live color + live rendor + realtime masking + highligh text + charactor fade
 
-## Why `baeru`
+<img src="assets/htop-more-demo.gif" alt="baeru htop more demo" width="820" />
+
+```yaml
+profiles:
+  - name: htop-jirai-vim
+    match:
+      command: htop
+    backend: tui
+    features:
+      - reveal
+      - live_color
+      - live_render
+    effect: scatter
+    animation_color_fade: true
+    animation_color_darken_factor: 0.02
+    live_render_duration_ms: 620 # The fade is slowed down to make it easier to see.
+    live_render_mouse_quiet_ms: 280
+    theme_file: examples/themes/jirai-pink.yml
+    capture_ms: 360
+    duration_ms: 1120
+    frames: 24
+```
+
+### CLI inline animation + theme
+
+<img src="assets/cli-demo.gif" alt="baeru cli demo" width="820" />
+
+```yaml
+  - name: ls-inline
+    match:
+      command: ls
+    backend: cli
+    features:
+      - inline_animation
+    effect: coalesce
+    theme_file: themes/matrix-green.yml
+    cli_settled_color: "#b6ffd0"
+    cli_gradient_start: "#004d26"
+    cli_gradient_end: "#eafff2"
+    duration_ms: 900
+    frames: 20
+```
+
+
+### CLI inline animation + charactor fade
+
+<img src="assets/cli-demo-neofetch.gif" alt="baeru cli neofetch demo" width="820" />
+
+```yaml
+  - name: neofetch
+    match:
+      command: neofetch
+    backend: cli
+    features:
+      - inline_animation
+    animation_color_fade: true
+    animation_color_darken_factor: 0.02
+    live_render_duration_ms: 120
+    live_render_mouse_quiet_ms: 280
+    duration_ms: 900
+    frames: 18
+```
+
+## What `baeru` is for
 
 Many terminal customization ideas fall into one of two extremes:
 
 - patch or fork the target application
 - build a brand-new terminal UI from scratch
 
-`baeru` explores a middle path: keep the original app, but wrap it with presentation and interaction layers.
+`baeru` explores a third path: keep the original app, but wrap it with presentation and interaction layers.
 
-That makes it possible to experiment with things like:
+That makes room for things like:
 
-- cinematic startup reveals for TUIs
-- theme-driven ANSI recoloring
-- per-command keymaps
-- lightweight animation for normal CLI output
+- startup reveals that make `htop` and `lazygit` feel staged
+- theme-driven ANSI recoloring without patching the target app
+- `highlight` effects that blink and react to matching output
+- CLI animations that make plain command output settle into place
+- output transforms that mask or replace visible text while keeping the original command untouched
 
-## Core model
+## What it can do
 
-`baeru` is organized around two concepts:
+### TUI drama
 
-- `backend`
-  The execution path: `tui`, `cli`, or `raw`
-- `features`
-  Layered behaviors such as `reveal`, `live_color`, `keymap`, and `inline_animation`
+- `reveal`
+  Captures the startup screen, animates it, then hands control back to the original TUI
+- `live_color`
+  Rewrites ANSI colors live, including indexed palette replacement
+- `keymap`
+  Applies per-command input remapping from YAML
+- `live_render`
+  Rebuilds TUI state and animates dirty cells during updates
 
-This separation makes it easy to express profiles like:
+### CLI drama
 
-- `htop` uses `reveal + live_color + keymap`
-- `vim` stays close to passthrough
-- `ls` uses CLI animation only
+- `inline_animation`
+  Animates ordinary stdout with effects like `coalesce`, `glitch`, `matrix`, and `sweep`
+- `highlight`
+  Watches for matching text and reacts with styled emphasis, blinking, captures, and hooks
+- `replace` / `mask`
+  Rewrites only the visible output layer, useful for demos and screenshots
+
+## Quick start
+
+The fastest way to get the vibe:
+
+```bash
+cargo run -- htop
+cargo run -- lazygit
+cargo run -- ls -la
+cargo run -- -b cli -e '(?i)error|timeout' journalctl -n 50
+```
+
+More explicit examples:
+
+```bash
+cargo run -- -m reveal htop
+cargo run -- -m color_live -t examples/themes/jirai-pink.yml htop
+cargo run -- -m reveal -t examples/themes/jirai-pink.yml -k examples/keymaps/htop-vim.yml htop
+cargo run -- -m live_render -t examples/themes/jirai-pink.yml htop
+cargo run -- -b cli --effect matrix git status
+cargo run -- -b cli -e '(?i)error' -e 'timeout' journalctl -n 50
+cargo run -- -b cli -R '(?i)token=[A-Za-z0-9_]+' 'token=[redacted]' env
+```
 
 ## Installation
 
@@ -85,30 +216,6 @@ cargo build --release
 ./target/release/baeru htop
 ```
 
-## Quick start
-
-Run using the default profile lookup:
-
-```bash
-cargo run -- htop
-cargo run -- lazygit
-cargo run -- ls -la
-```
-
-Explicit examples:
-
-```bash
-cargo run -- -m reveal htop
-cargo run -- -m color_live -t examples/themes/jirai-pink.yml htop
-cargo run -- -m reveal -t examples/themes/jirai-pink.yml -k examples/keymaps/htop-vim.yml htop
-cargo run -- -m live_render -t examples/themes/jirai-pink.yml htop
-cargo run -- -b cli ls -la
-cargo run -- -b cli git status
-cargo run -- -b cli -e '(?i)error' -e 'timeout' journalctl -n 50
-cargo run -- -b cli -R '(?i)token=[A-Za-z0-9_]+' 'token=[redacted]' env
-cargo run -- -b cli -M '(?i)password=.*' sh -c 'printf \"password=hunter2\\n\"'
-```
-
 Useful short options include `-b` for `--backend`, `-m` for `--mode`, `-E` for `--effect`, `-c` for `--config-file`, `-t` for `--theme-file`, and `-k` for `--keymap-file`.
 
 If no `--config-file` is given, `baeru` looks for config files in this order:
@@ -136,6 +243,14 @@ If no command is specified and stdin is a terminal, `htop` is used as the defaul
 ```bash
 cargo run
 ```
+
+## Demo recipes
+
+- `htop` with reveal + recolor + keymap
+- `lazygit` with a faster startup reveal
+- `journalctl` with match-driven highlights
+- `git status` with animated settle effects
+- `env` or `neofetch` with visible masking for recordings and screenshots
 
 ## Backends
 
@@ -247,6 +362,8 @@ Supported effects:
 ## Highlight rules
 
 `baeru` can watch output for matching keywords or regular expressions and react to them.
+In CLI mode, matches are colorized and can trigger hooks or captures.
+In TUI rendering paths such as `reveal` and `live_render`, matches can also flash in place with side markers for a more aggressive alert feel.
 
 CLI option:
 
@@ -305,7 +422,7 @@ baeru --backend cli \
   --highlight-capture-cli-text \
   --highlight-output-dir ./baeru-artifacts \
   --highlight-output-prefix 'nightly-{backend}-{timestamp}-' \
-  -- journalctl -n 50
+  journalctl -n 50
 ```
 
 Per match rule, `baeru` can:
