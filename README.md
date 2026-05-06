@@ -45,7 +45,7 @@ If you want the production-oriented TUI wrapper path without the whole "make it 
 
 ```yaml
 profiles:
-  - name: htop-jirai-vim
+  - name: htop-jirai-pink
     match:
       command: htop
     backend: tui
@@ -66,7 +66,7 @@ profiles:
 
 ```yaml
 profiles:
-  - name: htop-jirai-vim
+  - name: htop-jirai-pink
     match:
       command: htop
     backend: tui
@@ -111,7 +111,7 @@ profiles:
 <img src="assets/cli-demo-neofetch.gif" alt="baeru cli neofetch demo" width="820" />
 
 ```yaml
-  - name: neofetch
+  - name: neofetch-fade
     match:
       command: neofetch
     backend: cli

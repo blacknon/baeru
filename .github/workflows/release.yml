@@ -68,7 +68,7 @@ jobs:
             target: aarch64-apple-darwin
             archive_ext: tar.gz
             artifact_name: build-aarch64-apple-darwin
-          - os: windows-latest
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             archive_ext: zip
             artifact_name: build-x86_64-pc-windows-msvc
@@ -143,7 +143,7 @@ jobs:
           Compress-Archive -Path "$PkgDir/*" -DestinationPath "dist/$Archive" -Force
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/baeru-${{ steps.package_version.outputs.version }}.${{ matrix.target }}.${{ matrix.archive_ext }}
@@ -199,7 +199,7 @@ jobs:
             artifact_name: build-x86_64-pc-windows-msvc
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
           path: release-assets
