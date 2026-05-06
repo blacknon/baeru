@@ -1,4 +1,7 @@
-use crate::{model::{Rgb, Theme}, transform::transform_line};
+use crate::{
+    model::{Rgb, Theme},
+    transform::transform_line,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StyledCell {
