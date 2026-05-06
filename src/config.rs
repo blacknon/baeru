@@ -155,14 +155,16 @@ fn build_runtime_with_env(
     )
     .context("invalid highlight_color")?;
     let highlight_rules = compile_highlight_rules(
-        &highlight.highlight,
-        &highlight.highlight_command,
-        highlight.highlight_capture_tui_screenshot,
-        highlight.highlight_capture_cli_text,
-        highlight.highlight_output_dir.as_deref(),
-        highlight.highlight_output_prefix.as_deref(),
+        CliHighlightRuleOptions {
+            patterns: &highlight.highlight,
+            command: &highlight.highlight_command,
+            capture_tui_screenshot: highlight.highlight_capture_tui_screenshot,
+            capture_cli_text: highlight.highlight_capture_cli_text,
+            output_dir: highlight.highlight_output_dir.as_deref(),
+            output_prefix: highlight.highlight_output_prefix.as_deref(),
+            default_color: highlight_default_color,
+        },
         &profile.highlight_rules,
-        highlight_default_color,
     )
     .context("failed to compile highlight rules")?;
     let output_transforms = compile_output_transform_rules(
@@ -205,34 +207,39 @@ fn parse_highlight_color(value: Option<&str>) -> Result<Rgb> {
     Ok(parse_optional_rgb(value)?.unwrap_or(Rgb(255, 255, 0)))
 }
 
-fn compile_highlight_rules(
-    cli_patterns: &[String],
-    cli_command: &[String],
-    cli_capture_tui_screenshot: bool,
-    cli_capture_cli_text: bool,
-    cli_output_dir: Option<&Path>,
-    cli_output_prefix: Option<&str>,
-    profile_rules: &[HighlightRuleConfig],
+struct CliHighlightRuleOptions<'a> {
+    patterns: &'a [String],
+    command: &'a [String],
+    capture_tui_screenshot: bool,
+    capture_cli_text: bool,
+    output_dir: Option<&'a Path>,
+    output_prefix: Option<&'a str>,
     default_color: Rgb,
+}
+
+fn compile_highlight_rules(
+    cli_options: CliHighlightRuleOptions<'_>,
+    profile_rules: &[HighlightRuleConfig],
 ) -> Result<Vec<HighlightRule>> {
     let mut rules = Vec::new();
-    for pattern in cli_patterns {
+    for pattern in cli_options.patterns {
         rules.push(HighlightRule {
             key: pattern.clone(),
             pattern: pattern.clone(),
             regex: Regex::new(pattern)
                 .with_context(|| format!("invalid highlight regex: {pattern}"))?,
-            color: default_color,
-            command: (!cli_command.is_empty()).then(|| {
-                cli_command
+            color: cli_options.default_color,
+            command: (!cli_options.command.is_empty()).then(|| {
+                cli_options
+                    .command
                     .iter()
                     .map(|part| OsString::from(part.as_str()))
                     .collect::<Vec<_>>()
             }),
-            capture_tui_screenshot: cli_capture_tui_screenshot,
-            capture_cli_text: cli_capture_cli_text,
-            output_dir: cli_output_dir.map(Path::to_path_buf),
-            output_prefix: cli_output_prefix.map(str::to_string),
+            capture_tui_screenshot: cli_options.capture_tui_screenshot,
+            capture_cli_text: cli_options.capture_cli_text,
+            output_dir: cli_options.output_dir.map(Path::to_path_buf),
+            output_prefix: cli_options.output_prefix.map(str::to_string),
         });
     }
     for rule in profile_rules {
