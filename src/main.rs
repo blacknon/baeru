@@ -11,9 +11,25 @@ mod tui_backend;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use model::{Backend, Cli, Runtime};
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    process,
+};
 
-fn main() -> Result<()> {
+fn main() {
+    let exit_code = match real_main() {
+        Ok(()) => 0,
+        Err(err) => {
+            support::restore_terminal_state();
+            eprintln!("baeru: {err:#}");
+            1
+        }
+    };
+
+    process::exit(exit_code);
+}
+
+fn real_main() -> Result<()> {
     let cli = Cli::parse();
     let rt = config::build_runtime(cli)?;
     match rt.backend {

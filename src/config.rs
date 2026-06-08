@@ -8,7 +8,7 @@ use crate::{
     support::{env_flag, is_term_dumb},
     theme::{builtin_theme, parse_optional_rgb, read_theme},
 };
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use regex::Regex;
 use std::{
     collections::{BTreeSet, HashMap},
@@ -44,11 +44,10 @@ fn build_runtime_with_env(
         command: cli_command,
     } = cli;
 
-    let command = if cli_command.is_empty() && stdin_is_tty {
-        vec![OsString::from("htop")]
-    } else {
-        cli_command.clone()
-    };
+    if cli_command.is_empty() && stdin_is_tty {
+        bail!("command is required");
+    }
+    let command = cli_command.clone();
 
     let config = match resolve_config_path(files.config_file.as_deref()) {
         Some(path) => read_config(&path)
@@ -832,6 +831,62 @@ profiles:
 
         assert!(runtime.features.contains(&Feature::Reveal));
         assert!(!runtime.features.contains(&Feature::LiveColor));
+    }
+
+    #[test]
+    fn build_runtime_with_env_errors_when_tty_has_no_command() {
+        let err = build_runtime_with_env(
+            Cli {
+                selection: SelectionArgs {
+                    backend: None,
+                    mode: None,
+                    effect: None,
+                },
+                files: FileArgs {
+                    config_file: None,
+                    theme_file: None,
+                    palette: "default".to_string(),
+                    keymap_file: None,
+                },
+                animation: AnimationArgs {
+                    capture_ms: 360,
+                    duration_ms: 720,
+                    frames: 24,
+                    live_render_duration_ms: 90,
+                    live_render_mouse_quiet_ms: 180,
+                    animation_color_fade: false,
+                    animation_color_darken_factor: 0.25,
+                    no_theme_after_reveal: false,
+                },
+                cli_render: CliRenderArgs {
+                    max_lines: 200,
+                    max_bytes: 1_000_000,
+                    animate_over_limit: false,
+                },
+                highlight: HighlightArgs {
+                    highlight: vec![],
+                    highlight_color: None,
+                    highlight_command: vec![],
+                    highlight_capture_cli_text: false,
+                    highlight_capture_tui_screenshot: false,
+                    highlight_output_dir: None,
+                    highlight_output_prefix: None,
+                },
+                transform: TransformArgs {
+                    replace: vec![],
+                    mask: vec![],
+                    mask_char: "*".to_string(),
+                },
+                command: vec![],
+            },
+            true,
+            true,
+            false,
+            false,
+        )
+        .expect_err("runtime should reject empty tty command");
+
+        assert_eq!(err.to_string(), "command is required");
     }
 
     #[test]

@@ -238,12 +238,6 @@ You can also point to a config explicitly:
 cargo run -- -c baeru.yml htop
 ```
 
-If no command is specified and stdin is a terminal, `htop` is used as the default PoC target:
-
-```bash
-cargo run
-```
-
 ## Demo recipes
 
 - `htop` with reveal + recolor + keymap

@@ -48,7 +48,7 @@ pub(super) struct PtySession {
 impl PtySession {
     pub(super) fn spawn(command: &[OsString], rows: u16, cols: u16) -> Result<Self> {
         if command.is_empty() {
-            return Err(anyhow!("no command specified"));
+            return Err(anyhow!("command is required"));
         }
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
